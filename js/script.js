@@ -107,7 +107,7 @@ let forumFriends = safeGetJSON('darkalley_friends', []);
 let forumMessages = safeGetJSON('darkalley_messages', []);
 // 频道预置消息带版本号：改 DEFAULT_CHANNELS 时升级，旧缓存自动重置为新通知（避免用户看不到清空后的消息）
 let lingshiMessages = (() => {
-    const LINGSHI_VER = 'xuju-lingshi-v3';
+    const LINGSHI_VER = 'xuju-lingshi-v4';
     if (localStorage.getItem('xuju_lingshi_ver') !== LINGSHI_VER) {
         const fresh = JSON.parse(JSON.stringify(DEFAULT_CHANNELS));
         safeSet('xuju_lingshi', fresh);
@@ -1568,8 +1568,8 @@ function updatePortalStatus() {
     }
 }
 
-// ============ ☁️ 云端账号（腾讯云 CloudBase 云函数 + PostgreSQL） ============
-// CloudBase HTTP 网关默认域名（路由 / → 云函数 api）；留空 = 纯本地模式
+// ============ ☁️ 云端账号（Cloudflare Worker + D1） ============
+// 玄枢云端服务默认域名（/api/*）；留空 = 纯本地模式
 // 也可不改代码：运行后执行 localStorage.setItem('darkalley_cloud_api', '你的域名') 再刷新（优先级更高）
 const CLOUD_API_BASE_DEFAULT = 'https://huaxu-account.y15390814204.workers.dev';
 const CLOUD_TOKEN_KEY = 'darkalley_cloud_token';
@@ -1664,6 +1664,7 @@ function doLogin(info) {
     document.getElementById('awakenModal').style.display = 'none';
     document.getElementById('forumContainer').style.display = 'block';
     document.getElementById('terminalContainer').style.display = 'none';
+    setPageTitle(PAGE_TITLE_FORUM);
     updateForumIdentityUI();
     applyForumSkin(getForumSkin());
     if (typeof renderForumProfile === 'function') renderForumProfile();
@@ -1733,20 +1734,26 @@ function logoutForum() {
     if (cloudApiBase() && tok) { try { fetch(cloudApiBase() + '/api/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + tok } }).catch(() => {}); } catch (e) {} }
     document.getElementById('terminalContainer').style.display = 'none';
     document.getElementById('forumContainer').style.display = 'block';
+    setPageTitle(PAGE_TITLE_FORUM);
     updateForumIdentityUI();
     applyForumSkin(getForumSkin());
     if (typeof renderForumProfile === 'function') renderForumProfile();
     renderPostList();
 }
+// 页面标题：论坛=暗巷（保持），终端=玄枢
+const PAGE_TITLE_FORUM = '暗巷 | 匿名灵异论坛';
+const PAGE_TITLE_TERMINAL = '玄枢 | 墟管局终端';
+function setPageTitle(t) { try { if (document.title !== t) document.title = t; } catch (e) {} }
 // 进入终端（员工视角，保留）
 function enterTerminal() {
     if (!window.currentUser) { openAwakenModal(); return; }
     document.getElementById('forumContainer').style.display = 'none';
     document.getElementById('terminalContainer').style.display = 'block';
+    setPageTitle(PAGE_TITLE_TERMINAL);
     if (!terminalInited) setTimeout(initTerminal, 300);
     updatePortalStatus(); setupMiniTerminalPlayer();
 }
-function logoutTerminal() { document.getElementById('terminalContainer').style.display = 'none'; document.getElementById('forumContainer').style.display = 'block'; updatePortalStatus(); }
+function logoutTerminal() { document.getElementById('terminalContainer').style.display = 'none'; document.getElementById('forumContainer').style.display = 'block'; setPageTitle(PAGE_TITLE_FORUM); updatePortalStatus(); }
 // 论坛身份 UI 刷新
 function updateForumIdentityUI() {
     const elName = document.getElementById('forumUserName');
@@ -1845,7 +1852,7 @@ function showTerminalLoading(callback) {
     if (ring) { ring.style.strokeDasharray = CIRC; ring.style.strokeDashoffset = CIRC; }
     loader.style.display = 'flex';
     let progress = 0;
-    const stages = [[0,'正在建立灵枢链接…'],[28,'校准锚点频率…'],[52,'注入认知屏蔽层…'],[74,'同步收容物库…'],[90,'链路稳定…']];
+    const stages = [[0,'正在建立玄枢链接…'],[28,'校准锚点频率…'],[52,'注入认知屏蔽层…'],[74,'同步收容物库…'],[90,'链路稳定…']];
     const timer = setInterval(() => {
         progress += Math.floor(Math.random() * 6) + 4;
         if (progress > 100) progress = 100;
@@ -2507,7 +2514,7 @@ function isInternalRole() {
 function isInternalUsername(uname) {
     return !!uname && INTERNAL_ROLE_NAMES.indexOf(uname) !== -1;
 }
-// 渲染灵犀侧栏频道按钮 + 好友会话 + 好友群聊频道
+// 渲染玄枢通讯侧栏频道按钮 + 好友会话 + 好友群聊频道
 function renderLingshiChannels() {
     const wrap = document.getElementById('lingshiChannels');
     if (!wrap) return;
@@ -2793,7 +2800,7 @@ window.deleteGroup = async function (name) {
     renderSocialPanel(); renderLingshi();
 };
 function bindSocialEvents() {
-    // 灵犀分区 tab：💬 消息 / 👥 好友 / ✉️ 申请（QQ 式）
+    // 玄枢通讯分区 tab：💬 消息 / 👥 好友 / ✉️ 申请（QQ 式）
     const tabBtns = document.querySelectorAll('.lingshi-tab');
     window.switchLingTab = function (t) {
         tabBtns.forEach(b => b.classList.toggle('active', b.dataset.ltab === t));

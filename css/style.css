@@ -2140,7 +2140,7 @@ input:focus { border-color: var(--accent-red); box-shadow: 0 0 10px var(--accent
 .channel-btn[data-channel="cloud"] { border: 1px dashed rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.5); }
 .channel-btn[data-channel="cloud"].active { background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25); }
 
-/* —— 灵犀社交（好友列表 + 好友群聊） —— */
+/* —— 玄枢通讯（好友列表 + 好友群聊） —— */
 .social-btn { border-style: dashed; border-color: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.4); margin-top: 0; }
 .social-btn.active { border-color: var(--accent-red); background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.12); color: var(--text-primary); }
 .lingshi-social { border: 1px solid var(--border-color); background: rgba(0,0,0,0.22); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
@@ -2165,7 +2165,7 @@ input:focus { border-color: var(--accent-red); box-shadow: 0 0 10px var(--accent
 #socialCreateGroupBtn:hover { background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25); }
 
 /* 我的帖子管理按钮 */
-/* 灵犀私聊：微信风格（方形头像 + 气泡 + 已读） */
+/* 玄枢通讯私聊：微信风格（方形头像 + 气泡 + 已读） */
 .dm-row { display: flex; align-items: flex-end; gap: 8px; margin: 10px 0; }
 .dm-row-mine { justify-content: flex-end; }
 .dm-row-theirs { justify-content: flex-start; }
@@ -2179,7 +2179,7 @@ input:focus { border-color: var(--accent-red); box-shadow: 0 0 10px var(--accent
 /* 已读：短信风格（朴素灰色小字，参考系统短信） */
 .dm-read { font-size: 0.56rem; color: var(--text-muted); letter-spacing: 0.05em; }
 .dm-empty { text-align: center; color: var(--text-muted); font-size: 0.78rem; padding: 24px 0; }
-/* 灵犀频道消息：微信群聊风格（头像 + 名字 + 气泡） */
+/* 玄枢通讯频道消息：微信群聊风格（头像 + 名字 + 气泡） */
 .chat-msg { display: flex; gap: 10px; margin: 12px 0; align-items: flex-start; }
 .chat-msg-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
 .chat-msg-avatar-fb { display: flex; align-items: center; justify-content: center; font-size: 0.9rem; color: #fff; background: linear-gradient(135deg, #5a2d3e, #2d1b2a); border: 1px solid rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.4); border-radius: 50%; }
@@ -2378,7 +2378,7 @@ input:focus { border-color: var(--accent-red); box-shadow: 0 0 10px var(--accent
 }
 .channel-btn { position: relative; }
 .channel-btn .ch-badge { position: absolute; top: 2px; right: 2px; }
-/* 好友会话频道（灵犀左侧，微信式会话列表） */
+/* 好友会话频道（玄枢通讯左侧，微信式会话列表） */
 .friend-ch { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; }
 .friend-ch .ch-avatar { width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 0.6rem; color: #fff; background: linear-gradient(135deg, #5a2d3e, #2d1b2a); flex-shrink: 0; border: 1px solid rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.4); }
 .friend-ch .ch-avatar img { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; }
@@ -2419,7 +2419,7 @@ input:focus { border-color: var(--accent-red); box-shadow: 0 0 10px var(--accent
 .social-note-edit input { width: 90px; padding: 3px 8px; font-size: 0.66rem; }
 .social-note-edit button { border: 1px solid var(--border-color); border-radius: 999px; padding: 2px 8px; font-size: 0.62rem; cursor: pointer; background: transparent; color: var(--text-secondary); }
 
-/* 💬 灵犀 QQ 式分区（💬 消息 / 👥 好友 / ✉️ 申请，顶部 tab 切换） */
+/* 💬 玄枢通讯 QQ 式分区（💬 消息 / 👥 好友 / ✉️ 申请，顶部 tab 切换） */
 .lingshi-tabs { display: flex; gap: 6px; padding: 6px 4px 8px; border-bottom: 1px solid var(--border-color); margin-bottom: 8px; }
 .lingshi-tab { flex: 1; padding: 6px 4px; border: 1px solid var(--border-color); border-radius: 999px; font-size: 0.72rem; color: var(--text-secondary); background: transparent; cursor: pointer; position: relative; transition: 0.2s; text-align: center; white-space: nowrap; }
 .lingshi-tab:hover { color: var(--text-primary); border-color: var(--accent-red); }
