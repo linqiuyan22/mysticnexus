@@ -3,8 +3,7 @@ main = "workers/worker.js"
 compatibility_date = "2026-08-16"
 
 # ⚠️ binding 必须叫 HUAXU_DB（与 worker.js 里的 env.HUAXU_DB 一致）
-# database_id 在创建 D1 数据库后才有，用 wrangler d1 info 或 Dashboard 里查看
 [[d1_databases]]
 binding = "HUAXU_DB"
 database_name = "huaxu-db"
-database_id = "你的数据库ID"
+database_id = "d539cec0-c6c0-4f0c-b951-d5f7d5495aaf"
