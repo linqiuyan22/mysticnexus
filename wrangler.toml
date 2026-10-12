@@ -2,8 +2,8 @@ name = "huaxu-account"
 main = "workers/worker.js"
 compatibility_date = "2026-08-16"
 
-# ⚠️ binding 必须叫 HUAXU_DB（与 worker.js 里的 env.HUAXU_DB 一致）
+# D1 数据库绑定（与 workers/worker.js 中 env.HUAXU_DB 对应）
 [[d1_databases]]
 binding = "HUAXU_DB"
 database_name = "huaxu-db"
-database_id = "d539cec0-c6c0-4f0c-b951-d5f7d5495aaf"
+database_id = "ef5ae187-5d83-4968-829c-dfe356b7bc76"

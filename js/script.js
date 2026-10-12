@@ -3,13 +3,13 @@ const VALID_USERS = {
     'HUAXU': { pass:'hx1234', name:'系统管理员', isAdmin:true },
     'QYXH-GUEST': { pass:'visitor', name:'临时访客', isAdmin:false },
     'L-09-01-S': { pass:'fengyu', name:'苏晚眠', isAdmin:false },
-    'L-09-02-C': { pass:'lingxiu', name:'沈绛离', isAdmin:false },
-    'L-09-03-X': { pass:'tianji', name:'谢逢虚', isAdmin:false },
+    'L-09-03-S': { pass:'lingxiu', name:'沈绛离', isAdmin:false },
+    'L-09-02-X': { pass:'tianji', name:'谢逢虚', isAdmin:false },
     'L-09-04-W': { pass:'luoyu', name:'温泣语', isAdmin:false },
     'L-09-05-L': { pass:'kuanggu', name:'陆烬弦', isAdmin:false }
 };
 
-const ARCHIVE_DATA_VERSION = 'xuju-archive-v6-history';
+const ARCHIVE_DATA_VERSION = 'xuju-archive-v50';
 
 window.currentUser = null;
 purgeLegacySiteStorage();
@@ -31,12 +31,91 @@ let terminalInited = false;
 let editingId = null;
 let currentInternalPostId = null; 
 
-let forumNickname = localStorage.getItem('darkalley_nickname') || '匿名_' + Math.floor(Math.random()*0xffff).toString(16);
-// 论坛发言身份：已登录用账号绑定的身份名，游客用匿名
+// 匿名 id 拟人化：夜行客_3b9 风格（同一游客固定不变）
+const _NICK_A = ['夜行客','雾中客','纸灯人','烛火客','檐下人','巷口客','旧伞客','星辉客','无眠客','潮声客','槐下客','墨夜客','拾影人','望月人','叩门人','提灯客','枕风客','听雨人','守夜人','引路人'];
+function _genNick() { return _NICK_A[Math.floor(Math.random()*_NICK_A.length)] + '_' + Math.floor(Math.random()*0xfff).toString(16); }
+let forumNickname = localStorage.getItem('darkalley_nickname');
+if (!forumNickname) { forumNickname = _genNick(); localStorage.setItem('darkalley_nickname', forumNickname); }
+// 论坛发言身份：游客用匿名；已登录用「账号专属匿名 id」（隐藏实名，发帖/评论只显示匿名）
 function currentIdentityName() { return window.currentUser ? window.currentUser.name : forumNickname; }
+// 每个账号绑定一个固定匿名 id（发帖/评论显示，不显示实名）
+// 优先用云端账号 nickname（跨用户共享），没有则本地生成兜底
+function accountNick(username) {
+    if (!username) return forumNickname;
+    // 云端用户列表里有该账号的 nickname（已登录用户发帖/评论/在线都用它）
+    const cloudU = (typeof cloudUsers !== 'undefined' && cloudUsers) ? cloudUsers.find(u => u.username === username) : null;
+    if (cloudU && cloudU.nickname) return cloudU.nickname;
+    const map = safeGetJSON('darkalley_user_nicks', {});
+    if (!map[username]) {
+        map[username] = _genNick();
+        safeSet('darkalley_user_nicks', map);
+    }
+    return map[username];
+}
+function currentPostAuthor() { return window.currentUser ? accountNick(window.currentUser.username) : forumNickname; }
+// 渲染帖子作者名：优先用账号匿名 id（按 author_username 从 cloudUsers 映射），否则用帖子存的 author
+function displayAuthor(post) {
+    if (!post) return '';
+    if (post.author_username) {
+        const n = accountNick(post.author_username);
+        if (n) return n;
+    }
+    return post.author || '匿名';
+}
+// 渲染评论作者名：优先用账号匿名 id（按 username 从 cloudUsers 映射）
+function displayCommentUser(c) {
+    if (!c) return '匿名';
+    if (c.username) {
+        const n = accountNick(c.username);
+        if (n) return n;
+    }
+    return c.user || '匿名';
+}
+// 当前用户头像（dataURL/emoji），用于发帖/评论时存进帖子
+function currentUserAvatar() {
+    if (!window.currentUser) return null;
+    const av = window.currentUser.avatar;
+    return av && /^(data:|https?:|\/)/.test(av) ? av : (av || null);
+}
+// 渲染作者头像：有图片显示图片，否则显示 emoji/首字
+function authorAvatarHtml(avatar, fallback, cls) {
+    const c = cls || 'thread-avatar tone-a';
+    if (avatar && /^(data:|https?:|\/)/.test(avatar)) {
+        return `<img src="${avatar}" alt="" class="${c} author-avatar-img" style="width:36px;height:36px;border-radius:50%;object-fit:cover;">`;
+    }
+    return `<div class="${c}">${(avatar && avatar.trim()) ? avatar : (fallback || '☽')}</div>`;
+}
+// 帖子作者头像：优先帖子自带 author_avatar，否则从云端用户列表按 author_username 匹配（老帖/朋友帖也能显示头像）
+function postAuthorAvatar(p) {
+    if (p && p.author_avatar) return p.author_avatar;
+    if (p && p.author_username) {
+        const u = (cloudUsers || []).find(x => x.username === p.author_username);
+        if (u && u.avatar) return u.avatar;
+    }
+    return null;
+}
+// 评论头像：优先评论自带 avatar，否则从云端用户列表按 username 匹配
+function commentAuthorAvatar(c) {
+    if (c && c.avatar) return c.avatar;
+    if (c && c.username) {
+        const u = (cloudUsers || []).find(x => x.username === c.username);
+        if (u && u.avatar) return u.avatar;
+    }
+    return null;
+}
 let forumFriends = safeGetJSON('darkalley_friends', []);
 let forumMessages = safeGetJSON('darkalley_messages', []);
-let lingshiMessages = safeGetJSON('xuju_lingshi', JSON.parse(JSON.stringify(DEFAULT_CHANNELS)));
+// 频道预置消息带版本号：改 DEFAULT_CHANNELS 时升级，旧缓存自动重置为新通知（避免用户看不到清空后的消息）
+let lingshiMessages = (() => {
+    const LINGSHI_VER = 'xuju-lingshi-v3';
+    if (localStorage.getItem('xuju_lingshi_ver') !== LINGSHI_VER) {
+        const fresh = JSON.parse(JSON.stringify(DEFAULT_CHANNELS));
+        safeSet('xuju_lingshi', fresh);
+        localStorage.setItem('xuju_lingshi_ver', LINGSHI_VER);
+        return fresh;
+    }
+    return safeGetJSON('xuju_lingshi', JSON.parse(JSON.stringify(DEFAULT_CHANNELS)));
+})();
 let internalPosts = safeGetJSON('xuju_internal_posts', JSON.parse(JSON.stringify(DEFAULT_INTERNAL_POSTS)));
 let missions = safeGetJSON('xuju_missions', JSON.parse(JSON.stringify(DEFAULT_MISSIONS)));
 let checkinState = safeGetJSON('darkalley_checkin', { streak: 0, total: 0, points: 0, lastDate: null, dates: [] });
@@ -55,7 +134,7 @@ function purgeLegacySiteStorage() {
     const archiveSaved = safeGetJSON('xuju_archive', []);
     const postsSaved = safeGetJSON('darkalley_posts', []);
     const archiveVersion = localStorage.getItem('xuju_archive_version');
-    const validCategories = new Set(['华墟管理档案', '华墟地理', '威胁评估档案', '人物档案', '事件分支', '收容物分支']);
+    const validCategories = new Set(['华墟管理档案', '华墟地理', '威胁评估档案', '人物档案', '事件记录', '收容物分支']);
     const legacyTextPattern = /档案条例|总则条例|目录分支|正文内容|\.docx|整篇长文|利用文档|整理自|旧版档案/i;
     const archiveLooksLegacy = Array.isArray(archiveSaved) && (
         archiveSaved.length < 10 ||
@@ -63,7 +142,7 @@ function purgeLegacySiteStorage() {
             const text = `${item?.title || ''} ${item?.summary || ''} ${item?.content || ''}`;
             const category = String(item?.category || '');
             const isOldLabel = legacyTextPattern.test(`${category} ${text}`);
-            const isUnknownCategory = !!category && !validCategories.has(category) && !/^(人物档案|威胁评估档案|华墟管理档案|华墟地理|事件分支|收容物分支)$/.test(category);
+            const isUnknownCategory = !!category && !validCategories.has(category) && !/^(人物档案|威胁评估档案|华墟管理档案|华墟地理|事件记录|收容物分支)$/.test(category);
             return isOldLabel || isUnknownCategory;
         }) ||
         archiveVersion !== ARCHIVE_DATA_VERSION
@@ -118,6 +197,77 @@ if (!featuredPosts || !Array.isArray(featuredPosts) || featuredPosts.length === 
     safeSet('darkalley_featured', featuredPosts);
 }
 function savePosts() { safeSet('darkalley_posts', forumPosts); }
+
+// ============ ☁️ 云端帖子（多用户共享） ============
+let cloudPosts = [];
+let cloudOnline = false;
+// 初始化时先同步云端帖子（登录后也会触发）
+// 设计：默认世界观帖（DEFAULT_POSTS，p1-p22）保留在本地每个用户浏览器（精华/合集/收藏关联不破坏）；
+// 云端 posts 表只存用户自己发的帖子（多用户共享），渲染时按 id 合并去重
+async function loadCloudPosts() {
+    if (!cloudApiBase()) return;
+    const r = await cloudRequest('/api/posts');
+    if (r.ok && Array.isArray(r.data.posts)) {
+        cloudOnline = true;
+        cloudPosts = r.data.posts;
+        // 规范化 comments（云端 JSONB 可能读出为字符串）
+        const norm = (p) => { if (p && typeof p.comments === 'string') { try { p.comments = JSON.parse(p.comments); } catch (e) { p.comments = []; } } if (p && !Array.isArray(p.comments)) p.comments = []; return p; };
+        cloudPosts = (cloudPosts || []).map(norm);
+        // 补充头像：老帖子没有 author_avatar 时，按 author_username 从 cloudUsers 匹配
+        const avatarMap = {};
+        (cloudUsers || []).forEach(u => { if (u.username) avatarMap[u.username] = u.avatar || null; });
+        cloudPosts = cloudPosts.map(p => { if (!p.author_avatar && p.author_username && avatarMap[p.author_username]) p.author_avatar = avatarMap[p.author_username]; return p; });
+        // 合并：云端用户帖 + 本地默认帖（云端优先，避免 id 冲突）
+        const cloudIds = new Set(cloudPosts.map(p => p.id));
+        const merged = cloudPosts.slice();
+        DEFAULT_POSTS.forEach(p => { if (!cloudIds.has(p.id)) merged.push(norm(JSON.parse(JSON.stringify(p)))); });
+        forumPosts = merged;
+        safeSet('darkalley_posts', forumPosts);
+        renderPostList();
+        if (typeof renderForumProfile === 'function') renderForumProfile();
+        if (typeof renderFeaturedPosts === 'function') renderFeaturedPosts();
+        if (typeof renderCheckin === 'function') renderCheckin();
+    } else {
+        cloudOnline = false; // 连不上 → 保持本地兜底
+    }
+}
+function isCloudPost(id) { return cloudPosts.some(p => p.id === id); }
+
+// ============ ☁️ 云端档案（多用户共享：员工可编辑/新增，所有登录用户可见） ============
+let cloudArchives = [];
+async function loadCloudArchives() {
+    if (!cloudApiBase()) return;
+    const r = await cloudRequest('/api/archives');
+    if (r.ok && Array.isArray(r.data.archives)) {
+        cloudArchives = r.data.archives.map(a => {
+            if (a && typeof a.tags === 'string') { try { a.tags = JSON.parse(a.tags); } catch (e) { a.tags = []; } }
+            if (a && !Array.isArray(a.tags)) a.tags = [];
+            return a;
+        });
+        mergeCloudArchives();
+    }
+}
+function mergeCloudArchives() {
+    if (!cloudArchives.length) return;
+    const base = JSON.parse(JSON.stringify(DEFAULT_ARCHIVES));
+    const byId = {};
+    base.forEach(a => { if (a && a.id) byId[a.id] = a; });
+    cloudArchives.forEach(c => { if (c && c.id) byId[c.id] = c; });
+    archiveData = Object.keys(byId).map(k => byId[k]);
+    archiveData.forEach(item => {
+        if (!item) return;
+        const inferredImage = inferArchiveImage(item.title, item.category);
+        const inferredSub = inferArchiveSubCategory(item.title, item.category);
+        const inferredSubtitle = inferArchiveSubtitle(item.title, item.category, item.content || '');
+        item.image = item.image || inferredImage;
+        item.subCategory = item.subCategory || inferredSub;
+        item.subtitle = item.subtitle || inferredSubtitle;
+        if (item.category === '人物档案') item.image = inferredImage || '';
+    });
+    safeSet('xuju_archive', archiveData);
+    if (typeof renderArchiveList === 'function') renderArchiveList();
+}
+function isCloudArchive(id) { return cloudArchives.some(a => a.id === id); }
 function triggerDataFileDownload(fileName, payload) {
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -215,22 +365,17 @@ function startStars() {
 
 // ============ 双音乐播放器系统 ============
 let forumTrackIdx = 0;
-function setupForumMiniPlayer() {
-    const audio = document.getElementById('forumAudio');
-    const sourceEl = document.getElementById('forumAudioSource');
-    const btn = document.getElementById('forumMiniPlayBtn');
-    const prevBtn = document.getElementById('forumPrevBtn');
-    const nextBtn = document.getElementById('forumNextBtn');
-    const statusText = document.getElementById('forumStatusText');
-    const actionText = document.getElementById('forumActionText');
-    const disc = document.getElementById('forumVinylDisc');
-    const playerContainer = document.getElementById('forumVinylPlayer');
+// 统一的迷你播放器实现：论坛播放器与终端播放器共用这一套逻辑，
+// 以后修播放器功能只需要改这一处，不用两边分别改。
+function setupMiniPlayerGeneric(cfg) {
+    const { audio, sourceEl, btn, prevBtn, nextBtn, statusText, actionText, disc, playerContainer, volSlider, volToggle, volKey, ncmPrefix, ncmPresetKey, getIdx, setIdx } = cfg;
     if (!audio || !sourceEl || !btn) return;
     if (!LOCAL_TRACKS || !LOCAL_TRACKS.length) { if (playerContainer) playerContainer.style.opacity = '0.4'; return; }
     const setTrack = (i) => {
         if (!LOCAL_TRACKS.length) return;
-        forumTrackIdx = ((i % LOCAL_TRACKS.length) + LOCAL_TRACKS.length) % LOCAL_TRACKS.length;
-        const t = LOCAL_TRACKS[forumTrackIdx];
+        const idx = ((i % LOCAL_TRACKS.length) + LOCAL_TRACKS.length) % LOCAL_TRACKS.length;
+        setIdx(idx);
+        const t = LOCAL_TRACKS[idx];
         sourceEl.src = t.file;
         if (disc) disc.src = t.cover || disc.src;
         if (statusText) { statusText.textContent = t.title; statusText.title = t.title + (t.artist ? ' · ' + t.artist : '') + (t.album ? ' · 《' + t.album + '》' : ''); }
@@ -239,7 +384,7 @@ function setupForumMiniPlayer() {
     };
     setTrack(0);
     audio.volume = 0.3;
-    bindPlayerVolume(audio, document.getElementById('forumVolSlider'), document.getElementById('forumVolToggle'), 'darkalley_volume_forum');
+    bindPlayerVolume(audio, volSlider, volToggle, volKey);
     btn.addEventListener('click', () => {
         if (audio.paused) {
             audio.play().then(() => { playerContainer.classList.add('playing'); if (actionText) actionText.textContent = '[ 播放中 ]'; btn.textContent = '⏸'; }).catch(() => {});
@@ -247,49 +392,52 @@ function setupForumMiniPlayer() {
             audio.pause(); playerContainer.classList.remove('playing'); if (actionText) actionText.textContent = '[ 暂停 ]'; btn.textContent = '▶';
         }
     });
-    if (prevBtn) prevBtn.addEventListener('click', () => setTrack(forumTrackIdx - 1));
-    if (nextBtn) nextBtn.addEventListener('click', () => setTrack(forumTrackIdx + 1));
-    bindNcmPlayer('forum');
+    if (prevBtn) prevBtn.addEventListener('click', () => setTrack(getIdx() - 1));
+    if (nextBtn) nextBtn.addEventListener('click', () => setTrack(getIdx() + 1));
+    if (ncmPresetKey) bindNcmPlayer(ncmPrefix, ncmPresetKey); else bindNcmPlayer(ncmPrefix);
     setupPlayerMinimizeAndDrag();
+}
+
+function setupForumMiniPlayer() {
+    setupMiniPlayerGeneric({
+        audio: document.getElementById('forumAudio'),
+        sourceEl: document.getElementById('forumAudioSource'),
+        btn: document.getElementById('forumMiniPlayBtn'),
+        prevBtn: document.getElementById('forumPrevBtn'),
+        nextBtn: document.getElementById('forumNextBtn'),
+        statusText: document.getElementById('forumStatusText'),
+        actionText: document.getElementById('forumActionText'),
+        disc: document.getElementById('forumVinylDisc'),
+        playerContainer: document.getElementById('forumVinylPlayer'),
+        volSlider: document.getElementById('forumVolSlider'),
+        volToggle: document.getElementById('forumVolToggle'),
+        volKey: 'darkalley_volume_forum',
+        ncmPrefix: 'forum',
+        getIdx: () => forumTrackIdx,
+        setIdx: (v) => { forumTrackIdx = v; }
+    });
 }
 
 let terminalTrackIdx = 0;
 function setupMiniTerminalPlayer() {
-    const audio = document.getElementById('bgAudio');
-    const sourceEl = document.getElementById('audioSource');
-    const btn = document.getElementById('miniPlayBtn');
-    const prevBtn = document.getElementById('miniPrevBtn');
-    const nextBtn = document.getElementById('miniNextBtn');
-    const statusText = document.getElementById('statusText');
-    const actionText = document.getElementById('actionText');
-    const disc = document.getElementById('vinylDisc');
-    const playerContainer = document.getElementById('vinylPlayer');
-    if (!audio || !sourceEl || !btn) return;
-    if (!LOCAL_TRACKS || !LOCAL_TRACKS.length) { if (playerContainer) playerContainer.style.opacity = '0.4'; return; }
-    const setTrack = (i) => {
-        if (!LOCAL_TRACKS.length) return;
-        terminalTrackIdx = ((i % LOCAL_TRACKS.length) + LOCAL_TRACKS.length) % LOCAL_TRACKS.length;
-        const t = LOCAL_TRACKS[terminalTrackIdx];
-        sourceEl.src = t.file;
-        if (disc) disc.src = t.cover || disc.src;
-        if (statusText) { statusText.textContent = t.title; statusText.title = t.title + (t.artist ? ' · ' + t.artist : '') + (t.album ? ' · 《' + t.album + '》' : ''); }
-        audio.load();
-        if (!audio.paused) audio.play().catch(() => {});
-    };
-    setTrack(0);
-    audio.volume = 0.3;
-    bindPlayerVolume(audio, document.getElementById('miniVolSlider'), document.getElementById('miniVolToggle'), 'darkalley_volume_terminal');
-    btn.addEventListener('click', () => {
-        if (audio.paused) {
-            audio.play().then(() => { playerContainer.classList.add('playing'); if (actionText) actionText.textContent = '[ 播放中 ]'; btn.textContent = '⏸'; }).catch(() => {});
-        } else {
-            audio.pause(); playerContainer.classList.remove('playing'); if (actionText) actionText.textContent = '[ 暂停 ]'; btn.textContent = '▶';
-        }
+    setupMiniPlayerGeneric({
+        audio: document.getElementById('bgAudio'),
+        sourceEl: document.getElementById('audioSource'),
+        btn: document.getElementById('miniPlayBtn'),
+        prevBtn: document.getElementById('miniPrevBtn'),
+        nextBtn: document.getElementById('miniNextBtn'),
+        statusText: document.getElementById('statusText'),
+        actionText: document.getElementById('actionText'),
+        disc: document.getElementById('vinylDisc'),
+        playerContainer: document.getElementById('vinylPlayer'),
+        volSlider: document.getElementById('miniVolSlider'),
+        volToggle: document.getElementById('miniVolToggle'),
+        volKey: 'darkalley_volume_terminal',
+        ncmPrefix: 'mini',
+        ncmPresetKey: 'terminal',
+        getIdx: () => terminalTrackIdx,
+        setIdx: (v) => { terminalTrackIdx = v; }
     });
-    if (prevBtn) prevBtn.addEventListener('click', () => setTrack(terminalTrackIdx - 1));
-    if (nextBtn) nextBtn.addEventListener('click', () => setTrack(terminalTrackIdx + 1));
-    bindNcmPlayer('mini', 'terminal');
-    setupPlayerMinimizeAndDrag();
 }
 
 // ============ 🎛 播放器：收起 / 展开 / 拖拽移动 ============
@@ -325,17 +473,14 @@ function setupPlayerMinimizeAndDrag() {
                 el.style.transform = 'none';
             }
         } catch (e) {}
-        // 收起 / 展开
+        // 收起 / 展开（拖拽判定在下方独立 click 处理）
         minBtn.addEventListener('click', (e) => { e.stopPropagation(); el.classList.toggle('minimized'); saveMin(); });
-        el.addEventListener('click', (e) => {
-            if (el.classList.contains('minimized')) { el.classList.remove('minimized'); saveMin(); }
-        });
-        // 拖拽
-        let dragging = false, startX = 0, startY = 0, origLeft = 0, origTop = 0;
+        // 拖拽（收缩后也可移动）
+        let dragging = false, startX = 0, startY = 0, origLeft = 0, origTop = 0, suppressClick = false;
         el.addEventListener('pointerdown', (e) => {
             if (e.target.closest('button, .ncm-pop, a, select, input, iframe')) return;
-            if (el.classList.contains('minimized')) return;
             dragging = true;
+            suppressClick = false;
             const r = el.getBoundingClientRect();
             startX = e.clientX; startY = e.clientY;
             origLeft = r.left; origTop = r.top;
@@ -357,13 +502,21 @@ function setupPlayerMinimizeAndDrag() {
         const onUp = () => {
             if (!dragging) return;
             dragging = false;
-            el.style.transition = ''; el.classList.remove('dragging'); el.style.zIndex = z;
             const r = el.getBoundingClientRect();
+            if (Math.abs(r.left - origLeft) < 5 && Math.abs(r.top - origTop) < 5) suppressClick = false;
+            else suppressClick = true;
+            el.style.transition = ''; el.classList.remove('dragging'); el.style.zIndex = z;
             try { localStorage.setItem(key, JSON.stringify({ left: r.left, top: r.top })); } catch (err) {}
         };
         el.addEventListener('pointermove', onMove);
         el.addEventListener('pointerup', onUp);
         el.addEventListener('pointercancel', onUp);
+        // 点击展开：拖拽后不触发
+        const origClick = el.onclick || null;
+        el.addEventListener('click', (e) => {
+            if (suppressClick) { suppressClick = false; e.stopPropagation(); return; }
+            if (el.classList.contains('minimized')) { el.classList.remove('minimized'); saveMin(); }
+        });
     });
 }
 
@@ -497,7 +650,7 @@ function renderPostList() {
                 ${p.image ? `<img class="post-cover" src="${cover}" alt="" loading="lazy" decoding="async">` : ''}
                 <div class="post-content">
                     <div class="post-header">
-                        <div class="post-author">${p.author}</div>
+                        <div class="post-author">${authorAvatarHtml(postAuthorAvatar(p), (displayAuthor(p)||'匿').slice(-2).slice(0,1), 'thread-avatar tone-a')}<span class="post-author-name">${displayAuthor(p)}</span></div>
                         <div class="post-meta">
                             <span class="post-board-tag">${p.board || '综合'}</span>
                             <span class="post-time">${p.timestamp}</span>
@@ -548,9 +701,33 @@ function renderPagination(totalPages) {
 }
 
 // ============  论坛动态（模拟实时活跃度） ============
+let cloudUsers = []; // 云端用户（在线实况）
+async function loadCloudUsers() {
+    if (!cloudApiBase()) return;
+    // 优先从 /api/users 拿完整用户列表；云函数未更新时用云端帖子作者 + 聊天室用户兜底（也是真实数据）
+    const r = await cloudRequest('/api/users');
+    if (r.ok && Array.isArray(r.data.users) && r.data.users.length) {
+        cloudUsers = r.data.users;
+    } else {
+        const map = {};
+        (cloudPosts || []).forEach(p => { if (p.author && p.author !== '系统管理员') map[p.author] = { username: p.author_username || p.author, roleName: p.author, nickname: accountNick(p.author_username || p.author) }; });
+        (cloudChatMessages || []).forEach(m => { const nm = m.name || m.username; if (nm && nm !== '系统管理员') map[nm] = { username: m.username, roleName: m.name || m.username, nickname: accountNick(m.username) }; });
+        cloudUsers = Object.values(map);
+    }
+    if (typeof updateForumStatus === 'function') updateForumStatus();
+    // 云端 nickname 就绪后重绘帖子列表（作者名用云端匿名 id）
+    if (typeof renderPostList === 'function') renderPostList();
+}
 function updateForumStatus() {
-    const online = Math.floor(Math.random() * 76) + 45; // 45-120 人
-    const newPosts = Math.floor(Math.random() * 13) + 3; // 3-15 帖
+    // 在线人数：真实注册用户数 + 匿名游客基数（随用户规模实况增长）
+    const online = Math.max(40, (cloudUsers.length || 0) + 42 + Math.floor(Math.random() * 6));
+    const today = todayStr();
+    // 今日新帖：真实统计（timestamp 含今天的帖子）
+    const todayKey = today.replace(/-/g, '/').replace(/\//g, '') + '';
+    const newPosts = (forumPosts || []).filter(p => {
+        const t = String(p.timestamp || '');
+        return t.includes(today.replace(/-/g, '/')) || t.includes(today);
+    }).length;
     ['onlineCount', 'onlineCountDetail'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.textContent = online;
@@ -569,17 +746,22 @@ function updateForumStatus() {
             hte.textContent = '暂无话题';
         }
     }
-    // 在线用户列表（从已有帖子作者中随机选 5-8 个）
+    // 在线用户列表：云端真实用户（匿名 id）+ 帖子作者（匿名 id）+ 当前身份（匿名 id，置顶）
     const ue = document.getElementById('onlineUsers');
     if (ue) {
-        const pool = [...new Set((forumPosts || []).map(p => p.author))].filter(a => a && a !== '系统管理员');
-        if (!pool.length) { ue.innerHTML = '<li class="online-empty">—</li>'; }
+        const poolMap = {};
+        (cloudUsers || []).forEach(u => { const nm = u.nickname || u.roleName || u.username; if (nm && nm !== '系统管理员') poolMap[nm] = true; });
+        (forumPosts || []).forEach(p => { if (p.author && p.author !== '系统管理员') poolMap[displayAuthor(p)] = true; });
+        // 当前身份（登录用户或游客匿名 id）纳入并置顶
+        const myName = window.currentUser ? currentPostAuthor() : forumNickname;
+        if (myName && myName !== '系统管理员') poolMap[myName] = true;
+        const names = Object.keys(poolMap);
+        if (!names.length) { ue.innerHTML = '<li class="online-empty">—</li>'; }
         else {
-            const count = Math.floor(Math.random() * 4) + 5; // 5-8 个
-            const copy = pool.slice();
-            const chosen = [];
-            while (chosen.length < count && copy.length) chosen.push(copy.splice(Math.floor(Math.random() * copy.length), 1)[0]);
-            ue.innerHTML = chosen.map(u => `<li><span class="online-dot"></span>${u}</li>`).join('');
+            const sorted = names.slice();
+            if (myName) sorted.sort((a, b) => (a === myName ? -1 : b === myName ? 1 : 0));
+            const show = sorted.slice(0, 10);
+            ue.innerHTML = show.map(n => `<li class="${n === myName ? 'online-user-item self' : ''}"><span class="online-dot"></span>${n}${n === myName ? ' <small style="color:#ff7b7b">· 我</small>' : ''}</li>`).join('');
         }
     }
 }
@@ -606,9 +788,31 @@ function renderCheckin() {
         ? '明天再来，连续签到奖励更多'
         : (checkinState.lastDate === yesterdayStr() ? '昨天已签，今天续上可保持连签' : '签到可得积分，连续签到奖励更多');
 }
-function doCheckin() {
+async function doCheckin() {
     const today = todayStr();
     const yst = yesterdayStr();
+    if (checkinState.lastDate === today) { renderCheckin(); return; }
+    // —— 云端优先（账号级签到，跨设备同步）——
+    if (cloudApiBase() && window.currentUser) {
+        const r = await cloudRequest('/api/checkin', {});
+        if (r.ok && r.data && r.data.checkin) {
+            const ck = r.data.checkin;
+            checkinState.streak = ck.streak || 0;
+            checkinState.total = ck.total || 0;
+            checkinState.points = ck.points || 0;
+            checkinState.lastDate = ck.lastDate || today;
+            checkinState.dates = ck.dates || [];
+            safeSet('darkalley_checkin', checkinState);
+            // 同步云端积分到本地积分系统
+            if (r.data.points !== undefined) { const uid = window.currentUser ? window.currentUser.id : 'guest'; const m = safeGetJSON('darkalley_points_map', {}) || {}; m[uid] = r.data.points; safeSet('darkalley_points_map', m); }
+            renderCheckin(); renderForumProfile && renderForumProfile();
+            addExp(15);
+            alert(`☾ 签到成功！\n连签 ${checkinState.streak} 天\n积分 +${r.data.gained || 0}（当前总积分 ${getPoints()}）`);
+            return;
+        }
+        if (r.status !== 0) { alert(r.data.error || '[!] 签到失败'); renderCheckin(); return; }
+        // status 0 = 云端连不上 → 本地兜底
+    }
     if (checkinState.lastDate === today) { renderCheckin(); return; }
     if (checkinState.lastDate === yst) {
         checkinState.streak += 1;
@@ -623,11 +827,36 @@ function doCheckin() {
     safeSet('darkalley_checkin', checkinState);
     renderCheckin();
     const gained = 10 + Math.min(20, (checkinState.streak - 1) * 2);
-    addPoints(gained);
+    addPoints(gained); addExp(15);
     alert(`☾ 签到成功！\n连签 ${checkinState.streak} 天\n积分 +${gained}（当前总积分 ${getPoints()}）`);
 }
 if (document.getElementById('checkinBtn')) {
     document.getElementById('checkinBtn').addEventListener('click', doCheckin);
+}
+
+// 登录后从云端同步签到状态 + 积分（跨设备）
+async function loadCloudProfile() {
+    if (!cloudApiBase() || !window.currentUser) return;
+    const r = await cloudRequest('/api/profile');
+    if (r.ok && r.data) {
+        if (r.data.checkin) {
+            const ck = r.data.checkin;
+            checkinState.streak = ck.streak || 0;
+            checkinState.total = ck.total || 0;
+            checkinState.points = ck.points || 0;
+            checkinState.lastDate = ck.lastDate || null;
+            checkinState.dates = ck.dates || [];
+            safeSet('darkalley_checkin', checkinState);
+        }
+        if (r.data.points !== undefined) {
+            const uid = window.currentUser ? window.currentUser.id : 'guest';
+            const m = safeGetJSON('darkalley_points_map', {}) || {};
+            m[uid] = r.data.points;
+            safeSet('darkalley_points_map', m);
+        }
+        renderCheckin && renderCheckin();
+        renderForumProfile && renderForumProfile();
+    }
 }
 
 window.showPostDetail = function(id) {
@@ -662,13 +891,14 @@ window.showPostDetail = function(id) {
 
     const detailCover = post.image && String(post.image).trim() ? String(post.image).trim() : '';
     const commentCount = (post.comments||[]).length;
+    const canManage = window.currentUser && (window.currentUser.isAdmin || (post.author_username && post.author_username === window.currentUser.username) || (!post.author_username && post.author === currentPostAuthor()));
     document.getElementById('postDetailContent').innerHTML = `
         ${detailCover ? `<div class="post-detail-cover" style="background-image:url('${detailCover}')"></div>` : ''}
         <div class="post-detail-header">
             <div class="post-author-bar">
-                <div class="thread-avatar op tone-a">${(post.author||'匿').slice(-2).slice(0,1)}</div>
+                ${authorAvatarHtml(postAuthorAvatar(post), (displayAuthor(post)||'匿').slice(-2).slice(0,1), 'thread-avatar op tone-a')}
                 <div>
-                    <div class="post-author-name">${post.author}<span class="op-badge">楼主</span></div>
+                    <div class="post-author-name">${displayAuthor(post)}<span class="op-badge">楼主</span></div>
                     <div class="post-detail-meta">
                         <span>${post.timestamp}</span>
                         <span class="post-board-tag">${post.board || '综合'}</span>
@@ -677,7 +907,7 @@ window.showPostDetail = function(id) {
                 </div>
             </div>
             <h2>${post.title}</h2>
-            <div class="post-detail-actions">${favBtnHtml(post.id, post.title)}</div>
+            <div class="post-detail-actions">${favBtnHtml(post.id, post.title)}${canManage ? `<button class="post-manage-btn" onclick="editMyPost('${post.id}')">✎ 编辑</button><button class="post-manage-btn danger" onclick="deleteMyPost('${post.id}')">🗑 删除</button>` : ''}</div>
         </div>
         <div class="post-detail-body">
             ${bodyHtml}
@@ -694,25 +924,26 @@ window.showPostDetail = function(id) {
 }
 
 function renderComments(post) {
-    const opName = post.author;
+    const opName = displayAuthor(post);
     const listEl = document.getElementById('commentList');
     const comments = post.comments || [];
     const likedSet = safeGetJSON('darkalley_liked', {});
     if (!comments.length) { listEl.innerHTML = '<div style="color:var(--text-muted);padding:12px 0;">还没有回复，来抢个沙发？</div>'; return; }
     listEl.innerHTML = comments.map((c, idx) => {
+        const cUser = displayCommentUser(c);
         const floor = idx + 2;
-        const isOP = !!c.isOP || c.user === opName;
+        const isOP = !!c.isOP || cUser === opName;
         const opBadge = isOP ? '<span class="op-badge">楼主</span>' : '';
         const avatarTone = isOP ? 'op' : (idx % 3 === 0 ? 'tone-a' : idx % 3 === 1 ? 'tone-b' : 'tone-c');
-        const quoteHtml = c.replyTo ? `<div class="quote-block"><span class="quote-arrow">↩</span>回复 <b>${c.replyTo.user}</b>：${c.replyTo.text}</div>` : '';
+        const quoteHtml = c.replyTo ? `<div class="quote-block"><span class="quote-arrow">↩</span>回复 <b>${displayCommentUser(c.replyTo)}</b>：${c.replyTo.text}</div>` : '';
         const likeKey = post.id + '|' + idx;
         const liked = !!likedSet[likeKey];
         return `
         <div class="thread-card${isOP ? ' op-comment' : ''}">
-            <div class="thread-avatar ${avatarTone}">${(c.user||'匿').slice(-2).slice(0,1)}</div>
+            ${authorAvatarHtml(commentAuthorAvatar(c), (cUser||'匿').slice(-2).slice(0,1), 'thread-avatar ' + avatarTone)}
             <div class="thread-main">
                 <div class="thread-card-header">
-                    <strong>${c.user}</strong>${opBadge}
+                    <strong>${cUser}</strong>${opBadge}
                     <small>${c.time} · ${floor}楼</small>
                 </div>
                 ${quoteHtml}
@@ -773,17 +1004,81 @@ if (forumSearchInput) forumSearchInput.addEventListener('input', () => {
     currentPostPage = 1;
     renderPostList();
 });
-document.getElementById('submitNewPostBtn').addEventListener('click', () => {
+// —— 发帖图片上传（压缩到长边 1200，base64 存帖）——
+const newPostImgBtn = document.getElementById('newPostImgBtn');
+const newPostImageFile = document.getElementById('newPostImageFile');
+const newPostImagePreview = document.getElementById('newPostImagePreview');
+const newPostImagePreviewImg = document.getElementById('newPostImagePreviewImg');
+const newPostImageRemove = document.getElementById('newPostImageRemove');
+let __newPostImage = null;
+function compressImage(dataUrl, maxSide, quality, cb) {
+    const img = new Image();
+    img.onload = () => {
+        let w = img.width, h = img.height;
+        const scale = Math.min(1, maxSide / Math.max(w, h));
+        w = Math.round(w * scale); h = Math.round(h * scale);
+        const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        cb(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.src = dataUrl;
+}
+if (newPostImgBtn && newPostImageFile) newPostImgBtn.addEventListener('click', () => newPostImageFile.click());
+if (newPostImageFile) newPostImageFile.addEventListener('change', () => {
+    const file = newPostImageFile.files[0];
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { alert('请选择图片文件'); newPostImageFile.value = ''; return; }
+    if (file.size > 5 * 1024 * 1024) { alert('图片需小于 5MB'); newPostImageFile.value = ''; return; }
+    const reader = new FileReader();
+    reader.onload = (e) => compressImage(e.target.result, 1200, 0.82, (out) => {
+        __newPostImage = out;
+        if (newPostImagePreviewImg) newPostImagePreviewImg.src = out;
+        if (newPostImagePreview) newPostImagePreview.style.display = 'inline-flex';
+        newPostImageFile.value = '';
+    });
+    reader.readAsDataURL(file);
+});
+if (newPostImageRemove) newPostImageRemove.addEventListener('click', () => {
+    __newPostImage = null;
+    if (newPostImagePreview) newPostImagePreview.style.display = 'none';
+    if (newPostImagePreviewImg) newPostImagePreviewImg.src = '';
+});
+document.getElementById('submitNewPostBtn').addEventListener('click', async () => {
     if (!window.currentUser) { alert('请先登录再发帖'); openAwakenModal(); return; }
     const title = document.getElementById('newPostTitle').value.trim();
     const content = document.getElementById('newPostContent').value.trim();
     const board = document.getElementById('newPostBoard').value;
+    const image = __newPostImage || null;
     if (!title || !content) return alert('请填写标题和内容');
-    forumPosts.push({ id:'p'+Date.now(), title, content, board, author: currentIdentityName(), timestamp:new Date().toLocaleString('zh-CN'), comments:[] });
+    // —— 云端优先（多用户共享，发帖所有人可见）——
+    if (cloudApiBase() && window.currentUser) {
+        const r = await cloudRequest('/api/posts', { title, content, board, image, author: currentPostAuthor(), author_avatar: currentUserAvatar() });
+        if (r.ok && r.data && r.data.post) {
+            if (typeof r.data.post.comments === 'string') { try { r.data.post.comments = JSON.parse(r.data.post.comments); } catch (e) { r.data.post.comments = []; } }
+            if (!Array.isArray(r.data.post.comments)) r.data.post.comments = [];
+            forumPosts.push(r.data.post);
+            cloudPosts.push(r.data.post);
+            safeSet('darkalley_posts', forumPosts);
+            currentPostPage = 1;
+            addPoints(10); addExp(10); backToList();
+            document.getElementById('newPostTitle').value = '';
+            document.getElementById('newPostContent').value = '';
+            __newPostImage = null;
+            if (newPostImagePreview) newPostImagePreview.style.display = 'none';
+            if (newPostImagePreviewImg) newPostImagePreviewImg.src = '';
+            return;
+        }
+        if (r.status !== 0) { alert(r.data.error || '[!] 发帖失败'); return; }
+        // status 0 = 云端连不上 → 本地兜底
+    }
+    forumPosts.push({ id:'p'+Date.now(), title, content, board, image, author: currentPostAuthor(), author_username: window.currentUser ? window.currentUser.username : undefined, author_avatar: currentUserAvatar(), timestamp:new Date().toLocaleString('zh-CN'), comments:[] });
     currentPostPage = 1;
-    addPoints(10); savePosts(); backToList();
+    addPoints(10); addExp(10); savePosts(); backToList();
+    __newPostImage = null;
+    if (newPostImagePreview) newPostImagePreview.style.display = 'none';
+    if (newPostImagePreviewImg) newPostImagePreviewImg.src = '';
 });
-document.getElementById('submitCommentBtn').addEventListener('click', () => {
+document.getElementById('submitCommentBtn').addEventListener('click', async () => {
     if (!window.currentUser) { alert('请先登录再回复'); openAwakenModal(); return; }
     const text = document.getElementById('commentInput').value.trim();
     if (!text) return;
@@ -794,9 +1089,20 @@ document.getElementById('submitCommentBtn').addEventListener('click', () => {
     window.pendingReply = null;
     const hint = document.getElementById('commentReplyHint'); if (hint) hint.style.display = 'none';
     document.getElementById('commentInput').placeholder = '说点什么吧...';
+    // —— 云端帖子的评论走云端（多用户共享）——
+    if (cloudApiBase() && window.currentUser && (cloudPosts.some(cp => cp.id === postId) || post.author_username)) {
+        const r = await cloudRequest('/api/posts/comment', { postId, text, replyTo, user: currentPostAuthor(), avatar: currentUserAvatar() });
+        if (r.ok && Array.isArray(r.data.comments)) {
+            post.comments = r.data.comments;
+            savePosts(); renderComments(post); document.getElementById('commentInput').value = '';
+            addPoints(5); addExp(5); return;
+        }
+        if (r.status !== 0) { alert(r.data.error || '[!] 回复失败'); return; }
+        // status 0 → 本地兜底
+    }
     post.comments = post.comments || [];
-    post.comments.push({ user: currentIdentityName(), text, time:new Date().toLocaleString('zh-CN'), likes: 0, replyTo });
-    addPoints(5); savePosts(); renderComments(post); document.getElementById('commentInput').value = '';
+    post.comments.push({ user: currentPostAuthor(), username: window.currentUser ? window.currentUser.username : undefined, avatar: currentUserAvatar(), text, time:new Date().toLocaleString('zh-CN'), likes: 0, replyTo });
+    addPoints(5); addExp(5); savePosts(); renderComments(post); document.getElementById('commentInput').value = '';
 });
 document.getElementById('cancelReplyBtn').addEventListener('click', () => {
     window.pendingReply = null;
@@ -823,35 +1129,413 @@ function backToProfile() {
     document.getElementById('forumProfileView').style.display = 'block';
     renderForumProfile();
 }
+// —— 成就勋章 ——
+const BADGES = [
+    { id:'b1', name:'初入暗巷', icon:'🌙', desc:'完成首次签到', cond:s => s.checkin >= 1 },
+    { id:'b2', name:'守夜新人', icon:'📜', desc:'发出第一篇帖子', cond:s => s.posts >= 1 },
+    { id:'b3', name:'热心巷友', icon:'💬', desc:'回复 5 条', cond:s => s.comments >= 5 },
+    { id:'b4', name:'签到达人', icon:'🗓️', desc:'累计签到 7 天', cond:s => s.checkin >= 7 },
+    { id:'b5', name:'连载作者', icon:'✍️', desc:'发帖 5 篇', cond:s => s.posts >= 5 },
+    { id:'b6', name:'杂货收藏家', icon:'🛒', desc:'拥有 5 件商城物品', cond:s => s.owned >= 5 },
+    { id:'b7', name:'积分新贵', icon:'✨', desc:'积分达到 100', cond:s => s.points >= 100 },
+    { id:'b8', name:'老巷客', icon:'🕯️', desc:'累计签到 30 天', cond:s => s.checkin >= 30 }
+];
+function badgeStats() {
+    const me = window.currentUser ? window.currentUser.username : null;
+    const myPosts = forumPosts.filter(p => (p.author_username && me && p.author_username === me) || (!p.author_username && p.author === currentPostAuthor()));
+    let comments = 0;
+    (forumPosts || []).forEach(p => (p.comments || []).forEach(c => { if ((c.username && me && c.username === me) || (!c.username && c.user === currentPostAuthor())) comments++; }));
+    return { checkin: checkinState.total || 0, posts: myPosts.length, comments, owned: getOwned().length, points: getPoints() };
+}
+function earnedBadges() { const st = badgeStats(); return BADGES.filter(b => b.cond(st)).map(b => b.id); }
+function renderBadges() {
+    const wall = document.getElementById('badgeWall');
+    if (!wall) return;
+    const earned = new Set(earnedBadges());
+    wall.innerHTML = BADGES.map(b => earned.has(b.id)
+        ? `<div class="badge-item" title="${b.name}：${b.desc}"><span class="badge-ico">${b.icon}</span><span class="badge-name">${b.name}</span></div>`
+        : `<div class="badge-item badge-locked" title="${b.name}：${b.desc}（未获得）"><span class="badge-ico">🔒</span><span class="badge-name">${b.name}</span></div>`).join('');
+}
 function renderForumProfile() {
     document.getElementById('forumProfileName').textContent = currentIdentityName();
-    const level = Math.min(10, Math.floor(checkinState.total / 5) + 1);
+    const level = userLevel(getExp());
     document.getElementById('forumProfileSub').textContent = `已签到 ${checkinState.total} 天 · Lv.${level}`;
-    // 概览
-    const myPostCount = forumPosts.filter(p => p.author === currentIdentityName()).length;
-    document.getElementById('ovPosts').textContent = myPostCount;
+    renderBadges();
+    // 头像（云端保存的 emoji 或上传图片）
+    const avImg = document.getElementById('forumProfileAvatarImg');
+    const av = window.currentUser ? window.currentUser.avatar : null;
+    if (avImg) { applyAvatarFrame(avImg); if (av && /^(data:|https?:|\/)/.test(av)) { avImg.src = av; } else { avImg.src = 'images/user-icon.png'; } avImg.style.display = ''; }
+    // 概览（我的帖子：按 author_username 或匿名 id 匹配）
+    const myAuth = window.currentUser ? window.currentUser.username : null;
+    const mine = forumPosts.filter(p => (p.author_username && myAuth && p.author_username === myAuth) || (!p.author_username && p.author === currentPostAuthor()));
+    document.getElementById('ovPosts').textContent = mine.length;
     document.getElementById('ovCheckin').textContent = checkinState.total;
     document.getElementById('ovStreak').textContent = checkinState.streak;
     document.getElementById('ovPoints').textContent = checkinState.points;
-    // 我的帖子
-    const mine = forumPosts.filter(p => p.author === currentIdentityName());
+    // 我的帖子（可管理：删除 / 编辑）
     document.getElementById('mypostsList').innerHTML = mine.length ? mine.map(p => `
         <div class="my-post-item">
             <span class="my-post-board">${p.board || '综合'}</span>
             <span class="my-post-title" onclick="showPostDetail('${p.id}')">${p.title}</span>
             <small>${(p.comments||[]).length} 回复 · ${p.timestamp}</small>
+            <span class="my-post-actions">
+                <button onclick="editMyPost('${p.id}')">✎ 编辑</button>
+                <button onclick="deleteMyPost('${p.id}')">🗑 删除</button>
+            </span>
         </div>`).join('') : '<div style="color:var(--text-muted);padding:10px 0;">你还没有发过帖子</div>';
     // 签到记录
     const history = (checkinState.dates || []).slice().reverse();
     document.getElementById('checkinHistory').innerHTML = history.length ? history.map(d => `<div class="checkin-day"><span>☾</span><span>${d}</span><span class="checkin-day-ok">已签到</span></div>`).join('') : '<div style="color:var(--text-muted);padding:10px 0;">还没有签到记录</div>';
-    // 好友
-    document.getElementById('friendsList').innerHTML = forumFriends.length ? forumFriends.map(f => `<div class="friend-item" style="border-bottom:1px solid var(--border-color);padding:8px 0;display:flex;justify-content:space-between;"><span>${f}</span><button onclick="removeFriend('${f}')" style="color:var(--accent-red);">删除</button></div>`).join('') : '暂无好友';
-    // 私信
-    document.getElementById('messagesList').innerHTML = forumMessages.length ? forumMessages.map(m => `<div style="padding:8px 0;border-bottom:1px solid var(--border-color);"><strong>${m.from}</strong> → ${m.to}: ${m.text} <small style="color:var(--text-muted);">${m.time}</small></div>`).join('') : '暂无消息';
+    // 好友（云端同步，带小头像，点击进论坛私信）
+    const friendsEl = document.getElementById('friendsList');
+    if (friendsEl) friendsEl.innerHTML = forumFriends.length ? forumFriends.map(f => {
+        const av = friendAvatarOf(f);
+        const nm = friendDisplayOf(f);
+        const avHtml = av ? `<img src="${av}" class="friend-avatar-img" alt="">` : `<span class="friend-avatar">${(nm || '友').slice(-1)}</span>`;
+        return `<div class="friend-item" onclick="openForumChat('${f.replace(/'/g, '')}')"><span class="friend-avatar-wrap">${avHtml}</span><span class="friend-item-main"><span class="friend-item-name">${nm}</span><small>${f}</small></span><button onclick="event.stopPropagation();removeFriend('${f.replace(/'/g, '')}')" style="color:var(--accent-red);">删除</button></div>`;
+    }).join('') : '暂无好友';
+    // 私信（对话式，云端）
+    renderMessageChat();
 }
-window.removeFriend = function(name) { forumFriends = forumFriends.filter(f => f !== name); safeSet('darkalley_friends', forumFriends); renderForumProfile(); };
-document.getElementById('addFriendBtn').addEventListener('click', () => { const name = safePrompt('输入好友昵称：'); if (name && name.trim() && !forumFriends.includes(name.trim())) { forumFriends.push(name.trim()); safeSet('darkalley_friends', forumFriends); renderForumProfile(); } });
-document.getElementById('sendMessageBtn').addEventListener('click', () => { if (!window.currentUser) { alert('请先登录'); openAwakenModal(); return; } const to = document.getElementById('messageRecipient').value.trim(); const text = document.getElementById('messageContent').value.trim(); if (!to || !text) return alert('请填写收件人和内容'); forumMessages.push({ from: currentIdentityName(), to, text, time:new Date().toLocaleString('zh-CN') }); safeSet('darkalley_messages', forumMessages); renderForumProfile(); });
+// ============ ☁️ 云端社交（好友 / 私信，论坛与终端通用） ============
+let msgRecipient = null; // 当前私信对话对象（用户名）
+let cloudChatMessages = []; // 云端聊天室消息
+async function loadCloudSocial() {
+    if (!cloudApiBase() || !window.currentUser) return;
+    const f = await cloudRequest('/api/friends');
+    if (f.ok && Array.isArray(f.data.friends)) {
+        forumFriends = f.data.friends; safeSet('darkalley_friends', forumFriends);
+        if (f.data.notes) { friendNotes = f.data.notes || {}; safeSet('darkalley_friend_notes', friendNotes); }
+    }
+    const m = await cloudRequest('/api/messages');
+    if (m.ok && Array.isArray(m.data.messages)) { forumMessages = m.data.messages; safeSet('darkalley_messages', forumMessages); }
+    refreshUnread();
+    if (typeof loadFriendRequests === 'function') loadFriendRequests();
+    if (typeof renderSocialPanel === 'function') renderSocialPanel();
+    if (typeof renderForumProfile === 'function') renderForumProfile();
+}
+async function loadCloudChat() {
+    if (!cloudApiBase()) return;
+    const r = await cloudRequest('/api/chat');
+    if (r.ok && Array.isArray(r.data.messages)) { cloudChatMessages = r.data.messages; if (currentChannel === 'cloud') { renderLingshi(); } refreshUnread(); }
+}
+// ============ 🔴 未读红点 / 👥 好友申请 / 🏷 好友备注 ============
+let friendRequests = safeGetJSON('darkalley_friend_requests', []); // {from_user,to_user,status}
+let friendNotes = safeGetJSON('darkalley_friend_notes', {}); // { friend: 备注 }
+let unreadMap = safeGetJSON('darkalley_unread', {});
+function saveUnread() { safeSet('darkalley_unread', unreadMap); }
+function unreadOf(key) { return unreadMap[key] || 0; }
+function totalUnread() { return Object.values(unreadMap).reduce((a, b) => a + b, 0); }
+function clearUnread(key) { if (unreadMap[key]) { delete unreadMap[key]; saveUnread(); renderUnreadBadges(); } }
+function markConvRead(key) {
+    const read = safeGetJSON('darkalley_msg_read', {});
+    const me = (window.currentUser || {}).username;
+    const meName = (window.currentUser || {}).name;
+    if (key && key.indexOf('u_') === 0) { const p = key.slice(2); read[key] = forumMessages.filter(m => m.from_user === p && m.to_user === me).length; }
+    else if (key && key.indexOf('g_') === 0) { const g = key.slice(2); read[key] = (cloudGroupMessages[g] || groupChats[g] || []).filter(m => m.username !== me && m.user !== meName).length; }
+    else if (key) { read[key] = 1; }
+    safeSet('darkalley_msg_read', read);
+    clearUnread(key);
+}
+function refreshUnread() {
+    const me = (window.currentUser || {}).username;
+    const meName = (window.currentUser || {}).name;
+    const read = safeGetJSON('darkalley_msg_read', {});
+    const nm = {};
+    forumFriends.forEach(f => { const k = 'u_' + f; const t = forumMessages.filter(m => m.from_user === f && m.to_user === me).length; const n = Math.max(0, t - (read[k] || 0)); if (n) nm[k] = n; });
+    Object.keys(cloudGroupMessages).forEach(g => { const k = 'g_' + g; const t = (cloudGroupMessages[g] || []).filter(m => m.username !== me && m.user !== meName).length; const n = Math.max(0, t - (read[k] || 0)); if (n) nm[k] = n; });
+    if (cloudChatMessages.length) { const t = cloudChatMessages.filter(m => m.username !== me && m.user !== meName).length; const n = Math.max(0, t - (read['cloud'] || 0)); if (n) nm['cloud'] = n; }
+    unreadMap = nm; saveUnread(); renderUnreadBadges();
+}
+function renderUnreadBadges() {
+    document.querySelectorAll('#lingshiChannels .channel-btn').forEach(b => {
+        const k = b.dataset.channel; if (!k) return;
+        const n = unreadOf(k);
+        let badge = b.querySelector('.ch-badge');
+        if (n) { if (!badge) { badge = document.createElement('span'); badge.className = 'ch-badge'; b.appendChild(badge); } badge.textContent = n > 99 ? '99+' : n; }
+        else if (badge) badge.remove();
+    });
+    const sb = document.getElementById('socialReqBadge');
+    const reqN = friendRequests.filter(r => r.status === 'pending' && r.to_user === (window.currentUser || {}).username).length;
+    if (sb) { sb.style.display = reqN ? '' : 'none'; sb.textContent = reqN > 99 ? '99+' : reqN; }
+    const mb = document.getElementById('forumMailBadge');
+    const mailN = unreadMailCount();
+    if (mb) { mb.style.display = mailN ? '' : 'none'; mb.textContent = mailN > 99 ? '99+' : mailN; }
+}
+// 论坛私信未读数（对方发来未读）
+function unreadMailCount() {
+    const me = (window.currentUser || {}).username; if (!me) return 0;
+    const read = safeGetJSON('darkalley_msg_read', {});
+    let n = 0;
+    forumMessages.forEach(m => { if (m.to_user === me) { const k = 'u_' + m.from_user; if ((read[k] || 0) < forumMessages.filter(x => x.from_user === m.from_user && x.to_user === me).length) n++; } });
+    return n;
+}
+// 终端好友实名 / 备注（论坛保持匿名，终端用实名）
+function friendNameInTerminal(f) {
+    if (friendNotes[f]) return friendNotes[f];
+    const u = (cloudUsers || []).find(x => x.username === f);
+    return (u && (u.roleName || u.username)) || f;
+}
+window.editFriendNote = async function (f, note) {
+    friendNotes[f] = note || ''; safeSet('darkalley_friend_notes', friendNotes);
+    if (cloudApiBase() && window.currentUser) await cloudRequest('/api/friends/note', { friend: f, note: note || '' });
+    if (typeof renderSocialPanel === 'function') renderSocialPanel();
+    if (typeof renderLingshiChannels === 'function') renderLingshiChannels();
+};
+window.sendFriendRequest = async function (name) {
+    if (!window.currentUser) return alert('请先登录');
+    const n = (name || '').trim(); if (!n) return;
+    if (n === window.currentUser.username) return alert('不能添加自己');
+    if (forumFriends.indexOf(n) !== -1) return alert('已是好友');
+    if (cloudApiBase() && window.currentUser) {
+        const r = await cloudRequest('/api/friend_requests', { to: n });
+        if (r.ok) { alert('已发送好友申请，等待对方通过'); renderSocialPanel(); return; }
+        if (r.status !== 0) { alert(r.data.error || '发送失败'); return; }
+    }
+    forumFriends.push(n); safeSet('darkalley_friends', forumFriends); renderSocialPanel();
+};
+window.acceptFriend = async function (from) {
+    const me = (window.currentUser || {}).username;
+    if (cloudApiBase() && window.currentUser) {
+        const r = await cloudRequest('/api/friend_requests/accept', { from });
+        if (r.ok) { await loadCloudSocial(); await loadFriendRequests(); return; }
+        if (r.status !== 0 && r.status !== 409) { alert(r.data.error || '操作失败'); return; }
+    }
+    if (forumFriends.indexOf(from) === -1) { forumFriends.push(from); safeSet('darkalley_friends', forumFriends); }
+    friendRequests = friendRequests.filter(r => !(r.from_user === from && r.to_user === me)); safeSet('darkalley_friend_requests', friendRequests);
+    renderSocialPanel(); if (typeof renderForumProfile === 'function') renderForumProfile();
+};
+window.declineFriend = async function (from) {
+    const me = (window.currentUser || {}).username;
+    if (cloudApiBase() && window.currentUser) await cloudRequest('/api/friend_requests/decline', { from });
+    friendRequests = friendRequests.filter(r => !(r.from_user === from && r.to_user === me)); safeSet('darkalley_friend_requests', friendRequests);
+    renderSocialPanel();
+};
+async function loadFriendRequests() {
+    if (!cloudApiBase() || !window.currentUser) return;
+    const r = await cloudRequest('/api/friend_requests');
+    if (r.ok && Array.isArray(r.data.requests)) { friendRequests = r.data.requests; safeSet('darkalley_friend_requests', friendRequests); renderSocialPanel(); renderUnreadBadges(); }
+}
+// 清空所有频道聊天记录（本地重置为预置通知；云端由部署时 SQL 清空）
+function clearAllChat() {
+    lingshiMessages = JSON.parse(JSON.stringify(DEFAULT_CHANNELS)); safeSet('xuju_lingshi', lingshiMessages);
+    forumMessages = []; safeSet('darkalley_messages', forumMessages);
+    forumFriends = []; safeSet('darkalley_friends', forumFriends);
+    friendGroups = {}; safeSet('darkalley_friend_groups', friendGroups);
+    groupChats = {}; safeSet('darkalley_group_chats', groupChats);
+    cloudChatMessages = []; cloudGroups = []; cloudGroupsLoaded = false; cloudGroupMessages = {};
+    unreadMap = {}; safeSet('darkalley_unread', unreadMap);
+    safeSet('darkalley_msg_read', {});
+    friendRequests = []; safeSet('darkalley_friend_requests', friendRequests);
+    if (typeof renderLingshiChannels === 'function') renderLingshiChannels();
+    if (typeof renderLingshi === 'function') renderLingshi();
+    if (typeof renderSocialPanel === 'function') renderSocialPanel();
+    renderUnreadBadges();
+}
+// —— 私信对话式渲染 ——
+function renderMessageChat() {
+    const contactsEl = document.getElementById('msgContactList');
+    const headEl = document.getElementById('msgChatHead');
+    const bodyEl = document.getElementById('msgChatBody');
+    if (!contactsEl) return;
+    const me = (window.currentUser || {}).username;
+    const partners = new Set(forumFriends);
+    forumMessages.forEach(m => { if (m.to_user === me) partners.add(m.from_user); if (m.from_user === me) partners.add(m.to_user); });
+    const list = [...partners].filter(u => u && u !== me);
+    contactsEl.innerHTML = list.length ? list.map(u => `<div class="msg-contact-item ${msgRecipient === u ? 'msg-contact-active' : ''}" onclick="selectMsgRecipient('${u.replace(/'/g, '')}')">${u}<small>${forumMessages.filter(m => (m.from_user===u&&m.to_user===me)||(m.from_user===me&&m.to_user===u)).length} 条</small></div>`).join('') : '<div class="msg-chat-empty" style="padding:10px 4px;">暂无联系人<br>去「好友」添加</div>';
+    if (headEl) headEl.textContent = msgRecipient ? `与 ${msgRecipient} 的对话` : '从好友列表选择收件人';
+    if (bodyEl) {
+        if (!msgRecipient) { bodyEl.innerHTML = '<div class="msg-chat-empty">选择左侧好友开始私信</div>'; return; }
+        const conv = forumMessages.filter(m => (m.from_user === msgRecipient && m.to_user === me) || (m.from_user === me && m.to_user === msgRecipient));
+        bodyEl.innerHTML = conv.length ? conv.map(m => { const mine = m.from_user === me; return `<div class="msg-bubble ${mine ? 'msg-mine' : 'msg-theirs'}"><div class="msg-name">${mine ? '我' : (m.from_name || m.from_user)}</div>${m.text}<span class="msg-time">${m.time}</span></div>`; }).join('') : '<div class="msg-chat-empty">还没有消息，说点什么吧</div>';
+        bodyEl.scrollTop = bodyEl.scrollHeight;
+    }
+}
+window.selectMsgRecipient = function(u) { msgRecipient = u; renderMessageChat(); };
+// 论坛好友点击 → 打开论坛私信对话
+window.openForumChat = function(u) {
+    backToProfile();
+    const tab = document.querySelector('.profile-tab[data-tab="messages"]');
+    if (tab) tab.click();
+    msgRecipient = u;
+    renderMessageChat();
+};
+window.removeFriend = async function(name) {
+    forumFriends = forumFriends.filter(f => f !== name);
+    safeSet('darkalley_friends', forumFriends);
+    if (cloudApiBase() && window.currentUser) await cloudRequest('/api/friends', { friend: name }, 'DELETE');
+    renderForumProfile();
+};
+document.getElementById('addFriendBtn').addEventListener('click', async () => {
+    if (!window.currentUser) { alert('请先登录'); openAwakenModal(); return; }
+    const name = safePrompt('输入好友用户名：');
+    if (!name || !name.trim()) return;
+    const n = name.trim();
+    if (forumFriends.includes(n)) return alert('已是好友');
+    sendFriendRequest(n);
+    renderForumProfile();
+});
+document.getElementById('sendMessageBtn').addEventListener('click', async () => {
+    if (!window.currentUser) { alert('请先登录'); openAwakenModal(); return; }
+    if (!msgRecipient) return alert('请先选择收件人');
+    const text = document.getElementById('messageContent').value.trim();
+    if (!text) return;
+    const to = msgRecipient;
+    if (cloudApiBase() && window.currentUser) {
+        const r = await cloudRequest('/api/messages', { to, text });
+        if (r.ok && r.data.message) {
+            forumMessages.push(r.data.message);
+            safeSet('darkalley_messages', forumMessages);
+            document.getElementById('messageContent').value = '';
+            renderMessageChat(); return;
+        }
+        if (r.status !== 0) { alert(r.data.error || '发送失败'); return; }
+    }
+    forumMessages.push({ from_user: window.currentUser.username, from_name: currentIdentityName(), to_user: to, to_name: to, text, time: new Date().toLocaleString('zh-CN') });
+    safeSet('darkalley_messages', forumMessages);
+    document.getElementById('messageContent').value = '';
+    renderMessageChat();
+});
+document.getElementById('messageContent').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('sendMessageBtn').click(); } });
+
+// ============ 🗑 我的帖子管理（删除 / 编辑，云端） ============
+window.deleteMyPost = async function(id) {
+    if (!confirm('确定删除这篇帖子吗？')) return;
+    if (cloudApiBase() && window.currentUser) {
+        const r = await cloudRequest('/api/posts', { id }, 'DELETE');
+        if (r.ok) {
+            forumPosts = forumPosts.filter(p => p.id !== id);
+            cloudPosts = cloudPosts.filter(p => p.id !== id);
+            savePosts(); renderPostList(); renderForumProfile(); return;
+        }
+        if (r.status !== 0) { alert(r.data.error || '删除失败'); return; }
+    }
+    forumPosts = forumPosts.filter(p => p.id !== id);
+    cloudPosts = cloudPosts.filter(p => p.id !== id);
+    savePosts(); renderPostList(); renderForumProfile();
+};
+window.editMyPost = async function(id) {
+    const post = forumPosts.find(p => p.id === id);
+    if (!post) return;
+    const title = prompt('修改标题：', post.title); if (title === null) return;
+    const content = prompt('修改内容：', post.content); if (content === null) return;
+    if (!title.trim() || !content.trim()) return alert('标题和内容不能为空');
+    if (cloudApiBase() && window.currentUser) {
+        const r = await cloudRequest('/api/posts', { id, title: title.trim(), content: content.trim() }, 'PUT');
+        if (r.ok) {
+            post.title = title.trim(); post.content = content.trim();
+            savePosts(); renderPostList(); renderForumProfile(); return;
+        }
+        if (r.status !== 0) { alert(r.data.error || '修改失败'); return; }
+    }
+    post.title = title.trim(); post.content = content.trim();
+    savePosts(); renderPostList(); renderForumProfile();
+};
+
+// ============ ✎ 更换头像（emoji 或上传图片，云端保存） ============
+const forumChangeAvatarBtn = document.getElementById('forumChangeAvatarBtn');
+const forumAvatarTools = document.getElementById('forumAvatarTools');
+const forumAvatarEmojiBtn = document.getElementById('forumAvatarEmojiBtn');
+const forumAvatarUploadBtn = document.getElementById('forumAvatarUploadBtn');
+const forumAvatarFile = document.getElementById('forumAvatarFile');
+const forumAvatarEmojiInput = document.getElementById('forumAvatarEmoji');
+if (forumChangeAvatarBtn && forumAvatarTools) forumChangeAvatarBtn.addEventListener('click', () => { forumAvatarTools.style.display = forumAvatarTools.style.display === 'none' ? 'flex' : 'none'; });
+if (forumAvatarEmojiBtn) forumAvatarEmojiBtn.addEventListener('click', async () => {
+    if (!window.currentUser) return alert('请先登录');
+    const emoji = (forumAvatarEmojiInput.value || '').trim();
+    if (!emoji) return alert('请输入 emoji');
+    await saveAvatar(emoji);
+});
+if (forumAvatarUploadBtn && forumAvatarFile) forumAvatarUploadBtn.addEventListener('click', () => forumAvatarFile.click());
+if (forumAvatarFile) forumAvatarFile.addEventListener('change', () => {
+    const file = forumAvatarFile.files[0];
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { alert('请选择图片文件'); forumAvatarFile.value = ''; return; }
+    if (file.size > 5 * 1024 * 1024) { alert('图片需小于 5MB'); forumAvatarFile.value = ''; return; }
+    const reader = new FileReader();
+    reader.onload = (e) => openCropModal(e.target.result, async (out) => { await saveAvatar(out); forumAvatarFile.value = ''; });
+    reader.readAsDataURL(file);
+});
+
+// —— 头像裁剪（拖动 + 滚轮缩放，中间方形输出 200x200）——
+let __crop = { img: null, scale: 1, dx: 0, dy: 0, nw: 0, nh: 0, baseScale: 1, onDone: null };
+function openCropModal(dataUrl, onDone) {
+    const modal = document.getElementById('cropModal');
+    const img = document.getElementById('cropImage');
+    if (!modal || !img) return;
+    __crop = { img, scale: 1, dx: 0, dy: 0, nw: 0, nh: 0, baseScale: 1, onDone };
+    modal.style.display = 'flex';
+    img.onload = () => {
+        __crop.nw = img.naturalWidth; __crop.nh = img.naturalHeight;
+        __crop.baseScale = Math.max(248 / __crop.nw, 248 / __crop.nh); // 初始保证覆盖 200 框+边距
+        __crop.scale = __crop.baseScale;
+        applyCropTransform();
+    };
+    img.src = dataUrl;
+}
+function applyCropTransform() {
+    const { img, scale, dx, dy, nw, nh } = __crop;
+    const w = nw * scale, h = nh * scale;
+    img.style.width = w + 'px'; img.style.height = h + 'px';
+    img.style.left = (130 - w / 2 + dx) + 'px';
+    img.style.top = (130 - h / 2 + dy) + 'px';
+}
+function confirmCrop() {
+    const modal = document.getElementById('cropModal');
+    const { img, scale, dx, dy, nw, nh, onDone } = __crop;
+    const w = nw * scale, h = nh * scale;
+    const imgLeft = 130 - w / 2 + dx, imgTop = 130 - h / 2 + dy;
+    // 裁剪框左上角相对 stage 的实际位置（居中 200x200 在 260x260 stage 内 → 30,30）
+    const stageEl = document.getElementById('cropStage');
+    const boxEl = document.querySelector('.crop-box');
+    let boxLeft = 30, boxTop = 30;
+    if (stageEl && boxEl) {
+        const sr = stageEl.getBoundingClientRect();
+        const br = boxEl.getBoundingClientRect();
+        boxLeft = br.left - sr.left;
+        boxTop = br.top - sr.top;
+    }
+    let sx = boxLeft - imgLeft, sy = boxTop - imgTop;
+    sx = Math.max(0, Math.min(w - 200, sx)); sy = Math.max(0, Math.min(h - 200, sy));
+    const sw = Math.min(200, w - sx), sh = Math.min(200, h - sy);
+    const canvas = document.createElement('canvas'); canvas.width = 200; canvas.height = 200;
+    canvas.getContext('2d').drawImage(img, (sx / w) * nw, (sy / h) * nh, (sw / w) * nw, (sh / h) * nh, 0, 0, 200, 200);
+    const out = canvas.toDataURL('image/jpeg', 0.85);
+    modal.style.display = 'none';
+    if (onDone) onDone(out);
+}
+function bindCropEvents() {
+    const modal = document.getElementById('cropModal');
+    const stage = document.getElementById('cropStage');
+    const cancelBtn = document.getElementById('cropCancelBtn');
+    const confirmBtn = document.getElementById('cropConfirmBtn');
+    if (!modal || !stage || !cancelBtn || !confirmBtn) return;
+    cancelBtn.addEventListener('click', () => { modal.style.display = 'none'; const f = document.getElementById('forumAvatarFile'); if (f) f.value = ''; });
+    confirmBtn.addEventListener('click', confirmCrop);
+    let dragging = false, psx = 0, psy = 0, odx = 0, ody = 0;
+    stage.addEventListener('pointerdown', (e) => { dragging = true; psx = e.clientX; psy = e.clientY; odx = __crop.dx; ody = __crop.dy; if (stage.setPointerCapture) { try { stage.setPointerCapture(e.pointerId); } catch (err) {} } });
+    stage.addEventListener('pointermove', (e) => { if (!dragging) return; __crop.dx = odx + (e.clientX - psx); __crop.dy = ody + (e.clientY - psy); applyCropTransform(); });
+    stage.addEventListener('pointerup', () => { dragging = false; });
+    stage.addEventListener('pointercancel', () => { dragging = false; });
+    stage.addEventListener('wheel', (e) => { e.preventDefault(); const f = e.deltaY < 0 ? 1.1 : 0.9; __crop.scale = Math.max(__crop.baseScale, Math.min(__crop.baseScale * 5, __crop.scale * f)); applyCropTransform(); }, { passive: false });
+}
+bindCropEvents();
+async function saveAvatar(avatar) {
+    if (cloudApiBase() && window.currentUser) {
+        const r = await cloudRequest('/api/avatar', { avatar });
+        if (r.ok) {
+            window.currentUser.avatar = avatar;
+            if (forumAvatarTools) forumAvatarTools.style.display = 'none';
+            updateForumIdentityUI(); renderForumProfile(); return;
+        }
+        if (r.status !== 0) { alert(r.data.error || '头像保存失败'); return; }
+    }
+    window.currentUser.avatar = avatar;
+    const users = getUsers();
+    if (users[window.currentUser.username]) { users[window.currentUser.username].avatar = avatar; saveUsers(users); }
+    if (forumAvatarTools) forumAvatarTools.style.display = 'none';
+    updateForumIdentityUI(); renderForumProfile();
+}
 document.querySelectorAll('.profile-tab').forEach(tab => { tab.addEventListener('click', () => { document.querySelectorAll('.profile-tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); const t = tab.dataset.tab; ['overview','myposts','checkin','friends','messages'].forEach(k => { const el = document.getElementById(k + 'Panel'); if (el) el.style.display = k === t ? 'block' : 'none'; }); if (t === 'myposts' || t === 'checkin' || t === 'overview') renderForumProfile(); }); });
 const quickCheckinBtn = document.getElementById('quickCheckinBtn');
 if (quickCheckinBtn) quickCheckinBtn.addEventListener('click', () => { doCheckin(); renderForumProfile(); });
@@ -884,25 +1568,32 @@ function updatePortalStatus() {
     }
 }
 
-// ============ ☁️ 云端账号（Cloudflare Worker + KV） ============
-// 部署 Worker 后把域名填进这里（如 'https://huaxu-account.你的子域.workers.dev'）；留空 = 纯本地模式
-// 也可不改代码：运行后执行 localStorage.setItem('darkalley_cloud_api', '你的worker域名') 再刷新（优先级更高）
-const CLOUD_API_BASE_DEFAULT = '';
+// ============ ☁️ 云端账号（腾讯云 CloudBase 云函数 + PostgreSQL） ============
+// CloudBase HTTP 网关默认域名（路由 / → 云函数 api）；留空 = 纯本地模式
+// 也可不改代码：运行后执行 localStorage.setItem('darkalley_cloud_api', '你的域名') 再刷新（优先级更高）
+const CLOUD_API_BASE_DEFAULT = 'https://huaxu-account.y15390814204.workers.dev';
 const CLOUD_TOKEN_KEY = 'darkalley_cloud_token';
-function cloudApiBase() { return (localStorage.getItem('darkalley_cloud_api') || CLOUD_API_BASE_DEFAULT).replace(/\/+$/, ''); }
+function cloudApiBase() {
+    // file:// 本地调试：Origin=null 被 CloudBase 网关 WEB 安全域名白名单拦截，无法跨域访问云端
+    // 直接返回空走本地模式，避免每次登录/注册白等 6s 超时；线上 http(s) 部署不受影响
+    if (location.protocol === 'file:') return '';
+    return (localStorage.getItem('darkalley_cloud_api') || CLOUD_API_BASE_DEFAULT).replace(/\/+$/, '');
+}
 function cloudToken() { return localStorage.getItem(CLOUD_TOKEN_KEY); }
 function setCloudToken(t) { if (t) localStorage.setItem(CLOUD_TOKEN_KEY, t); else localStorage.removeItem(CLOUD_TOKEN_KEY); }
-async function cloudRequest(path, body) {
+async function cloudRequest(path, body, method) {
     const headers = {};
-    if (body) headers['Content-Type'] = 'application/json';
+    if (body !== undefined && body !== null) headers['Content-Type'] = 'application/json';
     const tok = cloudToken();
     if (tok) headers['Authorization'] = 'Bearer ' + tok;
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const timer = setTimeout(() => ctrl.abort(), 8000);
     try {
+        const m = method || (body !== undefined && body !== null ? 'POST' : 'GET');
         const res = await fetch(cloudApiBase() + path, {
-            method: body ? 'POST' : 'GET',
-            headers, body: body ? JSON.stringify(body) : undefined,
+            method: m,
+            headers,
+            body: body !== undefined && body !== null ? JSON.stringify(body) : undefined,
             signal: ctrl.signal
         });
         const data = await res.json().catch(() => ({ error: '响应解析失败' }));
@@ -911,11 +1602,18 @@ async function cloudRequest(path, body) {
         return { ok: false, status: 0, data: { error: '网络错误' } }; // status 0 = 连不上云端，交给本地兜底
     } finally { clearTimeout(timer); }
 }
+// 云端服务是否不可用（网络错 / 5xx / 函数不可用 / 余额不足）——此时应降级到本地兜底，保证本地账号可用
+function cloudUnavailable(r) {
+    if (!r || r.status === 0) return true;
+    if (r.status >= 500) return true;
+    const msg = String((r.data && (r.data.message || r.data.error)) || '');
+    return /FUNCTIONS_INVOCATION_FAILED|InsufficientBalance|Function is Unavailable|Unavailable/i.test(msg);
+}
 
 // ============ 👤 统一账号系统（邀请码注册 / 身份绑定） ============
 const INVITE_CODE = 'HX-2026';
 const STAFF_OPTIONS = {
-    'L-09-01-S': '苏晚眠', 'L-09-02-C': '沈绛离', 'L-09-03-X': '谢逢虚', 'L-09-04-W': '温泣语', 'L-09-05-L': '陆烬弦'
+    'L-09-01-S': '苏晚眠', 'L-09-03-S': '沈绛离', 'L-09-02-X': '谢逢虚', 'L-09-04-W': '温泣语', 'L-09-05-L': '陆烬弦'
 };
 function getUsers() { return safeGetJSON('darkalley_users', {}); }
 function saveUsers(u) { safeSet('darkalley_users', u); }
@@ -937,8 +1635,8 @@ async function attemptLogin() {
             return;
         }
         if (r.status === 401) { err.textContent = r.data.error || '[!] 用户名或密码错误'; return; }
-        if (r.status !== 0) { err.textContent = r.data.error || '[!] 登录失败'; return; }
-        // status 0 = 云端连不上 → 落到本地兜底
+        if (!cloudUnavailable(r)) { err.textContent = r.data.error || '[!] 登录失败'; return; }
+        // 云端不可用（余额不足 / 函数不可用 / 网络错误）→ 落到本地兜底，保证本地账号可登录
     }
     // —— 本地兜底 ——
     let info = null;
@@ -958,6 +1656,7 @@ async function attemptLogin() {
 function doLogin(info) {
     info.id = info.username; // 兼容旧代码里的 currentUser.id（= 账号名）
     window.currentUser = info;
+    seedTestAccount(); // 测试管理员账号自动填充数据（登录 / 会话恢复时）
     setSessionUser(info.username);
     userLoginCounts[info.username] = (userLoginCounts[info.username] || 0) + 1; safeSet('xuju_logincounts', userLoginCounts);
     if (!userFavorites[info.username]) userFavorites[info.username] = {};
@@ -966,44 +1665,61 @@ function doLogin(info) {
     document.getElementById('forumContainer').style.display = 'block';
     document.getElementById('terminalContainer').style.display = 'none';
     updateForumIdentityUI();
+    applyForumSkin(getForumSkin());
     if (typeof renderForumProfile === 'function') renderForumProfile();
     renderPostList();
+    if (cloudApiBase()) { loadCloudPosts(); loadCloudArchives(); loadCloudSocial(); loadCloudUsers(); loadCloudProfile(); loadCloudGroups(); } // 登录后同步云端帖子 + 档案 + 好友/私信 + 在线用户 + 签到/积分 + 群聊
 }
-// 注册：邀请码 + 用户名 + 密码 + 身份类型（自创角色 / 扮演员工）——云端优先，本地兜底
+// 注册：邀请码 + 用户名 + 密码 + 身份类型（自己带入 / 扮演觉醒者角色）——云端优先，本地兜底
+function collectAwakeningForm() {
+    const v = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+    const name = v('regAwakenName') || v('regAwakenSelfName') || '';
+    return {
+        name: name,
+        gender: v('regAwakenGender'), age: v('regAwakenAge'), birthday: v('regAwakenBirth'),
+        height: v('regAwakenHeight'), weight: v('regAwakenWeight'), identity: v('regAwakenIdentity'),
+        anchorType: v('regAwakenAnchorType'), level: v('regAwakenLevel'), abilities: v('regAwakenAbilities'),
+        appearance: v('regAwakenAppearance'), style: v('regAwakenStyle'),
+        family: v('regAwakenFamily'), experience: v('regAwakenExperience'),
+        traits: v('regAwakenTraits'), relations: v('regAwakenRelations'), item: v('regAwakenItem')
+    };
+}
 async function registerAccount() {
     const invite = document.getElementById('regInvite').value.trim();
     const username = document.getElementById('regUsername').value.trim();
     const pass = document.getElementById('regPassword').value.trim();
-    const roleType = (document.querySelector('input[name="regRoleType"]:checked') || {}).value || 'custom';
+    const roleType = (document.querySelector('input[name="regRoleType"]:checked') || {}).value || 'self';
     const err = document.getElementById('registerError');
     err.textContent = '';
     // 基础校验（本地快速反馈，云端也会再校验）
     if (invite !== INVITE_CODE) { err.textContent = '[!] 邀请码无效'; return; }
     if (!username || username.length < 2) { err.textContent = '[!] 用户名至少 2 个字符'; return; }
     if (!pass || pass.length < 4) { err.textContent = '[!] 密码至少 4 位'; return; }
-    let roleName = username, staffId = null, avatar = null;
-    if (roleType === 'staff') {
-        staffId = document.getElementById('regStaffSelect').value;
-        roleName = STAFF_OPTIONS[staffId];
+    let roleName = username, staffId = null, avatar = null, awakening = null;
+    if (roleType === 'self') {
+        roleName = document.getElementById('regSelfName').value.trim() || username;
     } else {
-        roleName = document.getElementById('regCustomName').value.trim() || username;
-        avatar = document.getElementById('regCustomAvatar').value.trim() || '🙂';
+        // 觉醒者：收集登记表
+        awakening = collectAwakeningForm();
+        roleName = awakening.name || document.getElementById('regAwakenName').value.trim() || username;
+        if (!roleName || roleName === username) { err.textContent = '[!] 请填写角色名（觉醒者登记表）'; return; }
+        avatar = document.getElementById('regAwakenAvatar').value.trim() || '🙂';
     }
     // —— 云端优先 ——
     if (cloudApiBase()) {
-        const r = await cloudRequest('/api/register', { invite, username, pass, roleType, staffId, roleName, avatar });
+        const r = await cloudRequest('/api/register', { invite, username, pass, roleType, roleName, staffId, avatar, awakening });
         if (r.ok) {
             setCloudToken(r.data.token);
             doLogin({ username: r.data.user.username, name: r.data.user.roleName, isAdmin: !!r.data.user.isAdmin, type: r.data.user.type, staffId: r.data.user.staffId, avatar: r.data.user.avatar });
             return;
         }
-        if (r.status !== 0) { err.textContent = r.data.error || '[!] 注册失败'; return; }
-        // status 0 = 云端连不上 → 落到本地兜底
+        if (!cloudUnavailable(r)) { err.textContent = r.data.error || '[!] 注册失败'; return; }
+        // 云端不可用（余额不足 / 函数不可用 / 网络错误）→ 落到本地兜底
     }
     // —— 本地兜底 ——
     const users = getUsers();
     if (users[username] || VALID_USERS[username]) { err.textContent = '[!] 用户名已被占用'; return; }
-    users[username] = { pass, type: roleType, staffId, roleName, avatar, createdAt: Date.now() };
+    users[username] = { pass, type: roleType, staffId, roleName, avatar, awakening, createdAt: Date.now() };
     saveUsers(users);
     err.textContent = '';
     doLogin({ username, name: roleName, isAdmin: false, type: roleType, staffId, avatar });
@@ -1018,6 +1734,7 @@ function logoutForum() {
     document.getElementById('terminalContainer').style.display = 'none';
     document.getElementById('forumContainer').style.display = 'block';
     updateForumIdentityUI();
+    applyForumSkin(getForumSkin());
     if (typeof renderForumProfile === 'function') renderForumProfile();
     renderPostList();
 }
@@ -1040,8 +1757,16 @@ function updateForumIdentityUI() {
     const accLink = document.getElementById('forumAccountLink');
     if (window.currentUser) {
         if (elName) elName.textContent = window.currentUser.name;
-        if (elSub) elSub.textContent = window.currentUser.type === 'staff' ? '扮演员工 · ' + (window.currentUser.staffId || '') : '自创角色';
-        if (elAvatar) elAvatar.textContent = window.currentUser.avatar || (window.currentUser.type === 'staff' ? '☽' : '🙂');
+        if (elSub) elSub.textContent = window.currentUser.type === 'awakened' ? '觉醒者 · 扮演角色' : (window.currentUser.type === 'staff' ? '编内 · 守夜人' : '自创角色');
+        if (elAvatar) {
+            applyAvatarFrame(elAvatar);
+            const av = window.currentUser.avatar;
+            if (av && /^(data:|https?:|\/)/.test(av)) {
+                elAvatar.innerHTML = '<img src="' + av + '" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">';
+            } else {
+                elAvatar.textContent = av || (window.currentUser.type === 'staff' ? '☽' : '🙂');
+            }
+        }
         if (loginBtn) loginBtn.textContent = '◈ 进入终端';
         if (logoutBtn) logoutBtn.style.display = '';
         if (accLink) accLink.textContent = window.currentUser.name;
@@ -1053,6 +1778,7 @@ function updateForumIdentityUI() {
         if (logoutBtn) logoutBtn.style.display = 'none';
         if (accLink) accLink.textContent = '登录';
     }
+    renderUserExp();
 }
 // 会话恢复（云端优先，本地兜底）
 async function restoreSession() {
@@ -1090,10 +1816,10 @@ document.querySelectorAll('.login-tab').forEach(tab => tab.addEventListener('cli
     document.getElementById('registerForm').style.display = tab.dataset.tab === 'register' ? 'block' : 'none';
 }));
 document.querySelectorAll('input[name="regRoleType"]').forEach(r => r.addEventListener('change', () => {
-    const staff = (document.querySelector('input[name="regRoleType"]:checked') || {}).value === 'staff';
-    const sw = document.getElementById('regStaffWrap'), cw = document.getElementById('regCustomWrap');
-    if (sw) sw.style.display = staff ? 'block' : 'none';
-    if (cw) cw.style.display = staff ? 'none' : 'block';
+    const val = (document.querySelector('input[name="regRoleType"]:checked') || {}).value || 'self';
+    const sw = document.getElementById('regSelfWrap'), aw = document.getElementById('regAwakenedWrap');
+    if (sw) sw.style.display = val === 'self' ? 'block' : 'none';
+    if (aw) aw.style.display = val === 'awakened' ? 'block' : 'none';
 }));
 function openAwakenModal() {
     document.getElementById('awakenModal').style.display = 'flex';
@@ -1213,6 +1939,7 @@ function initTerminal() {
     if (terminalInited) return;
     terminalInited = true; loadArchive(); saveLocalDataBundle(); bindTerminalNav(); startRain();
     startTypewriter(); renderLingshi(); renderInternalPosts(); renderMissions();
+    loadCloudChat(); // 预加载云端聊天室
     applyTerminalTheme(safeGetJSON('darkalley_theme', 'default'));
     setupEditorEvents(); switchPanel('home'); renderHomeEmbed('bureau'); updateProfilePanel();
     document.getElementById('terminalFortuneText').textContent = getDailyFortune();
@@ -1233,7 +1960,7 @@ window.switchPanel = function(name) {
         if (activeCategory === '行动记录') { showArchiveActions(); } else { renderArchiveList(); }
     }
     if (name === 'admin') renderAdminList();
-    if (name === 'profile') { updateProfilePanel(); renderThemeOptions(); }
+    if (name === 'profile') { updateProfilePanel(); renderEquipPanel(); }
     if (name === 'lingshi') renderLingshi();
     if (name === 'internalForum') renderInternalPosts();
     if (name === 'missions') renderMissions();
@@ -1277,14 +2004,14 @@ function bindTerminalNav() {
 // ============ 档案检索、收容物、通讯等 ============
 function loadArchive() {
     const saved = safeGetJSON('xuju_archive', null);
-    const validCategories = new Set(['华墟管理档案', '华墟地理', '威胁评估档案', '人物档案', '事件分支', '收容物分支']);
+    const validCategories = new Set(['华墟管理档案', '华墟地理', '威胁评估档案', '人物档案', '事件记录', '收容物分支']);
     const normalizeArchiveItem = item => {
         if (!item || typeof item !== 'object') return null;
         const category = String(item.category || '');
         const keyCategory = category === '档案条例' || category === '华墟管理档案' ? '华墟管理档案'
             : category === '人物' || category === '人物档案' ? '人物档案'
             : category === '高危势力' || category === '威胁评估档案' ? '威胁评估档案'
-            : category === '事件' || category === '事件分支' ? '事件分支'
+            : category === '事件' || category === '事件记录' ? '事件记录'
             : category === '收容物' || category === '收容物分支' ? '收容物分支'
             : category;
         const normalized = { ...item, category: keyCategory };
@@ -1294,7 +2021,7 @@ function loadArchive() {
         if (normalized.title && /^人物档案\s*·/.test(normalized.title) && normalized.category === '人物档案') {
             normalized.title = normalized.title.replace(/^人物档案\s*·/, '人物档案 ·');
         }
-        if (normalized.title && /^(人物档案|档案条例|事件分支|收容物分支)/.test(normalized.title) && !validCategories.has(normalized.category)) {
+        if (normalized.title && /^(人物档案|档案条例|事件记录|收容物分支)/.test(normalized.title) && !validCategories.has(normalized.category)) {
             normalized.category = validCategories.has(normalized.category) ? normalized.category : '华墟管理档案';
         }
         return normalized;
@@ -1316,9 +2043,7 @@ function loadArchive() {
         item.image = item.image || inferredImage;
         item.subCategory = item.subCategory || inferredSub;
         item.subtitle = item.subtitle || inferredSubtitle;
-        if (item.category === '人物档案' && !item.image.includes('.')) {
-            item.image = 'images/default-archive.jpg';
-        }
+        if (item.category === '人物档案') item.image = inferredImage || '';
     });
     safeSet('xuju_archive', archiveData);
     safeSet('site_local_data_bundle', { exportAt: new Date().toISOString(), archiveData, forumPosts, featuredPosts });
@@ -1368,6 +2093,19 @@ function renderArchiveNodeItems(items, container) {
     });
 }
 
+// 无配图档案的分类图标占位
+function archiveCatIcon(cat) {
+    const map = {
+        '华墟管理档案': '📜',
+        '华墟地理': '🗺️',
+        '威胁评估档案': '🕯️',
+        '人物档案': '👤',
+        '事件记录': '📍',
+        '收容物分支': '📦'
+    };
+    return map[cat] || '🗂';
+}
+
 function renderArchiveList() {
     if (!Array.isArray(archiveData) || archiveData.length === 0) {
         loadArchive();
@@ -1410,9 +2148,21 @@ function renderArchiveList() {
     if (!grid) {
         grid = document.createElement('div');
         grid.id = 'archiveGrid';
-        grid.className = 'archive-grid';
         container.appendChild(grid);
     }
+    // 人物/威胁档案视图:有证件照的排前面(主角团最前),无图的往后排;卡片用紧凑四列布局
+    if (activeCategory === '人物档案' || activeCategory === '威胁评估档案') {
+        const heroOrder = ['L-09-01-S', 'L-09-02-X', 'L-09-03-S', 'L-09-04-W', 'L-09-05-L', 'L-09-06-N'];
+        const hasImg = (x) => !!(x.image && String(x.image).trim());
+        filtered.sort((a, b) => {
+            const ia = hasImg(a) ? 1 : 0, ib = hasImg(b) ? 1 : 0;
+            if (ia !== ib) return ib - ia;
+            const ha = heroOrder.indexOf(a.id), hb = heroOrder.indexOf(b.id);
+            if (ha !== -1 || hb !== -1) return (ha === -1 ? 999 : ha) - (hb === -1 ? 999 : hb);
+            return String(a.id || '').localeCompare(String(b.id || ''));
+        });
+    }
+    grid.className = 'archive-grid' + ((activeCategory === '人物档案' || activeCategory === '威胁评估档案') ? ' archive-grid--person' : '');
 
     container.innerHTML = '';
     container.appendChild(sidebar);
@@ -1422,7 +2172,7 @@ function renderArchiveList() {
     grid.innerHTML = '';
 
     const categories = Array.from(new Set((archiveData || []).map(item => item.category).filter(Boolean))).sort((a, b) => {
-        const order = ['华墟管理档案', '华墟地理', '威胁评估档案', '人物档案', '事件分支', '收容物分支'];
+        const order = ['华墟管理档案', '华墟地理', '威胁评估档案', '人物档案', '事件记录', '收容物分支'];
         return (order.indexOf(a) === -1 ? 99 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 99 : order.indexOf(b));
     });
 
@@ -1483,11 +2233,14 @@ function renderArchiveList() {
         card.className = 'archive-card-item';
         card.addEventListener('click', () => openArchiveDetail(item));
 
-        const image = item.image && String(item.image).trim() ? String(item.image).trim() : 'images/default-archive.jpg';
+        const hasImg = item.image && String(item.image).trim() ? String(item.image).trim() : '';
         const tags = Array.isArray(item.tags) ? item.tags.slice(0, 3) : [item.subCategory || '档案'];
+        const imgHtml = hasImg
+            ? `<img class="archive-card-img" src="${hasImg}" alt="${item.title}" loading="lazy" decoding="async" onerror="this.style.display='none'">`
+            : `<div class="archive-card-img archive-card-img-text"><span>${archiveCatIcon(item.category)}</span></div>`;
 
         card.innerHTML = `
-            <img class="archive-card-img" src="${image}" alt="${item.title}" loading="lazy" decoding="async" onerror="this.src='images/default-archive.jpg'">
+            ${imgHtml}
             <div class="archive-card-body">
                 <div class="archive-card-title">${item.title}</div>
                 <div class="archive-card-summary">${item.summary || ''}</div>
@@ -1584,9 +2337,12 @@ function openArchiveDetail(item) {
     const imagePath = item.image && String(item.image).trim() ? String(item.image).trim() : 'images/default-archive.jpg';
     const isPerson = item.category === '人物档案' || /人物档案/.test(item.title || '');
     const subtitle = item.subtitle || '';
+    const personImgHtml = item.image && String(item.image).trim()
+        ? `<img src="${imagePath}" alt="${item.title}" loading="lazy" decoding="async" style="width:200px; height:200px; object-fit:cover; border-radius:12px; border:1px solid var(--border-color); background:#111;" onerror="this.src='images/default-archive.jpg'">`
+        : `<div class="archive-card-img archive-card-img-text" style="width:200px; height:200px; font-size:64px; border-radius:12px;"><span>${archiveCatIcon(item.category)}</span></div>`;
     const header = isPerson ? `
         <div style="display:flex; gap:16px; align-items:flex-start; margin-bottom:20px; padding-bottom:16px; border-bottom:1px solid var(--border-color);">
-            <img src="${imagePath}" alt="${item.title}" loading="lazy" decoding="async" style="width:200px; height:200px; object-fit:cover; border-radius:12px; border:1px solid var(--border-color); background:#111;" onerror="this.src='images/default-archive.jpg'">
+            ${personImgHtml}
             <div style="flex:1; min-width:0;">
                 <h2 style="color:#fff; margin:0 0 8px;">${item.title}</h2>
                 <div style="color:var(--text-muted); margin-bottom:8px;">${item.category}</div>
@@ -1738,33 +2494,457 @@ function renderMissions() {
     `;
     }).join('');
 }
+// ============ 👥 好友社交（好友列表 + 好友群聊） ============
+const INTERNAL_ROLE_NAMES = ['苏晚眠', '沈绛离', '谢逢虚', '温泣语', '陆烬弦']; // 内部角色账号（民俗社可见）
+let friendGroups = safeGetJSON('darkalley_friend_groups', {}); // 本地兜底 { groupName: { members: [], createdAt } }
+let groupChats = safeGetJSON('darkalley_group_chats', {}); // 本地兜底 { groupName: [ {user,text,time} ] }
+let cloudGroups = []; // 云端群列表 [{name,members,owner,createdAt}]
+let cloudGroupMessages = {}; // 云端群消息 { groupName: [{username,name,text,time}] }
+let cloudGroupsLoaded = false;
+function isInternalRole() {
+    return !!window.currentUser && INTERNAL_ROLE_NAMES.indexOf(window.currentUser.name) !== -1;
+}
+function isInternalUsername(uname) {
+    return !!uname && INTERNAL_ROLE_NAMES.indexOf(uname) !== -1;
+}
+// 渲染灵犀侧栏频道按钮 + 好友会话 + 好友群聊频道
+function renderLingshiChannels() {
+    const wrap = document.getElementById('lingshiChannels');
+    if (!wrap) return;
+    const baseChannels = [
+        { ch: 'main', label: '总局' },
+        { ch: 'operation', label: '外勤' }
+    ];
+    baseChannels.push({ ch: 'cloud', label: '云端 · 全球' });
+    // 群频道：云端已加载优先云端群，否则本地兜底
+    const groupNames = (cloudGroupsLoaded && window.currentUser) ? cloudGroups.map(g => g.name) : Object.keys(friendGroups || {});
+    const chBtn = (c) => { const n = unreadOf(c); return `<button class="channel-btn${currentChannel === c ? ' active' : ''}" data-channel="${c}"># ${baseChannels.find(b => b.ch === c) ? baseChannels.find(b => b.ch === c).label : c}${n ? `<span class="ch-badge">${n > 99 ? '99+' : n}</span>` : ''}</button>`; };
+    // 好友会话频道（微信式，终端显示实名/备注 + 头像 + 未读红点）
+    const friendChs = forumFriends.map(f => {
+        const nm = friendNameInTerminal(f);
+        const av = friendAvatarOf(f);
+        const avHtml = av ? `<img src="${av}" alt="">` : (nm || '友').slice(-1);
+        const un = unreadOf('u_' + f);
+        return `<button class="channel-btn friend-ch${currentChannel === 'u_' + f ? ' active' : ''}" data-channel="u_${f}"><span class="ch-avatar">${avHtml}</span><span class="ch-name">${nm}</span>${un ? `<span class="ch-badge">${un > 99 ? '99+' : un}</span>` : ''}</button>`;
+    }).join('');
+    const groupChs = groupNames.map(g => { const n = unreadOf('g_' + g); return `<button class="channel-btn${currentChannel === 'g_' + g ? ' active' : ''}" data-channel="g_${g}">👥 # ${g}${n ? `<span class="ch-badge">${n > 99 ? '99+' : n}</span>` : ''}</button>`; }).join('');
+    const html = baseChannels.map(c => chBtn(c.ch)).join('')
+        + (friendChs ? `<div class="bp-cat-label">👥 好友</div>` + friendChs : '')
+        + (groupChs ? `<div class="bp-cat-label">👥 好友群聊</div>` + groupChs : '');
+    wrap.innerHTML = html;
+    // 重新绑定频道点击
+    wrap.querySelectorAll('.channel-btn').forEach(btn => btn.addEventListener('click', () => {
+        currentChannel = btn.dataset.channel;
+        renderLingshi();
+        if (currentChannel === 'cloud') loadCloudChat();
+    }));
+}
+// 频道消息：微信群聊风格（方形头像 + 名字 + 气泡，自己消息靠右）
+function chatMsgHtml(m) {
+    const name = m.name || m.user || m.username || '未知';
+    const time = m.time || '';
+    const uname = m.username || (m.user && typeof m.user === 'string' ? m.user : '');
+    const me = (window.currentUser || {}).username;
+    const meName = (window.currentUser || {}).name;
+    const mine = !!(m && ((m.username && m.username === me) || (m.from_user && m.from_user === me) || (m.user && m.user === meName)));
+    let avUrl = null;
+    if (uname) { const u = (cloudUsers || []).find(x => x.username === uname); if (u && u.avatar) avUrl = u.avatar; }
+    const avHtml = (avUrl && /^(data:|https?:|\/)/.test(avUrl))
+        ? `<img src="${avUrl}" class="chat-msg-avatar" alt="">`
+        : `<div class="chat-msg-avatar chat-msg-avatar-fb">${(name || '?').slice(-1)}</div>`;
+    return `<div class="chat-msg${mine ? ' chat-msg-mine' : ''}">${mine ? '' : avHtml}<div class="chat-msg-main"><div class="chat-msg-meta"><strong>${mine ? '我' : name}</strong><span>${time}</span></div><div class="chat-msg-bubble">${m.text}</div></div>${mine ? avHtml : ''}</div>`;
+}
 function renderLingshi() {
     const channelMap = {
         main: '总局',
-        club: '民俗社',
-        operation: '外勤'
+        operation: '外勤',
+        cloud: '云端 · 全球'
     };
+    const el = document.getElementById('lingshiMessages');
+    const headerEl = document.querySelector('.lingshi-header');
+    const headerText = document.getElementById('lingshiHeaderText');
+    const gdBtn = document.getElementById('lingshiGroupDetailBtn');
+    renderLingshiChannels();
+    if (gdBtn) gdBtn.style.display = 'none';
+    if (currentChannel) { markConvRead(currentChannel); refreshUnread(); }
+    // 好友群聊频道
+    if (currentChannel && currentChannel.indexOf('g_') === 0) {
+        const gname = currentChannel.slice(2);
+        const head = `好友群聊 · ${gname}`;
+        if (headerText) headerText.textContent = '# ' + head;
+        if (gdBtn) gdBtn.style.display = 'inline-block';
+        const msgs = (cloudGroupMessages[gname] || groupChats[gname] || []);
+        el.innerHTML = msgs.length
+            ? msgs.map(m => chatMsgHtml(m)).join('')
+            : `<div class="chat-msg"><div class="chat-msg-avatar chat-msg-avatar-fb">系</div><div class="chat-msg-main"><div class="chat-msg-meta"><strong>系统</strong><span>--</span></div><div class="chat-msg-bubble">好友群聊「${gname}」创建成功，发一条消息吧。</div></div></div>`;
+        el.scrollTop = el.scrollHeight;
+        return;
+    }
+    // 好友私聊频道（微信风格：方形头像 + 气泡 + 已读）
+    if (currentChannel && currentChannel.indexOf('u_') === 0) {
+        const partner = currentChannel.slice(2);
+        const me = (window.currentUser || {}).username;
+        const partnerName = friendNameInTerminal(partner);
+        if (headerText) headerText.textContent = '# 私聊 · ' + partnerName;
+        const conv = forumMessages.filter(m => (m.from_user === partner && m.to_user === me) || (m.from_user === me && m.to_user === partner));
+        const myAv = currentUserAvatar();
+        const theirAv = friendAvatarOf(partner);
+        const myNm = (window.currentUser && (window.currentUser.name || window.currentUser.username)) || '我';
+        const dmAv = (av, nm) => (av && /^(data:|https?:|\/)/.test(av)) ? `<img src="${av}" class="dm-avatar" alt="">` : `<div class="dm-avatar dm-avatar-fb">${(nm || '?').slice(-1)}</div>`;
+        el.innerHTML = conv.length ? conv.map(m => {
+            const mine = m.from_user === me;
+            const avHtml = mine ? dmAv(myAv, myNm) : dmAv(theirAv, partnerName);
+            return `<div class="dm-row ${mine ? 'dm-row-mine' : 'dm-row-theirs'}">${mine ? '' : avHtml}<div class="dm-bubble ${mine ? 'dm-mine' : 'dm-theirs'}">${m.text}<span class="dm-meta"><span class="dm-time">${m.time}</span>${mine ? '<span class="dm-read">已读</span>' : ''}</span></div>${mine ? avHtml : ''}</div>`;
+        }).join('') : `<div class="dm-empty">和 ${partnerName} 还没有私聊，发条消息吧。</div>`;
+        el.scrollTop = el.scrollHeight;
+        return;
+    }
+    if (headerText) headerText.textContent = `# ${channelMap[currentChannel] || '总局'}`;
+    // 云端频道 = 全球共享聊天室
+    if (currentChannel === 'cloud') {
+        const msgs = cloudChatMessages;
+        el.innerHTML = msgs.length
+            ? msgs.map(m => chatMsgHtml(m)).join('')
+            : `<div class="chat-msg"><div class="chat-msg-avatar chat-msg-avatar-fb">云</div><div class="chat-msg-main"><div class="chat-msg-meta"><strong>系统</strong><span>--</span></div><div class="chat-msg-bubble">云端频道 · 全球在线，发一条试试。</div></div></div>`;
+        el.scrollTop = el.scrollHeight;
+        return;
+    }
     const msgs = lingshiMessages[currentChannel] || [];
-    document.querySelector('.lingshi-header').textContent = `# ${channelMap[currentChannel] || '总局'}`;
-    document.getElementById('lingshiMessages').innerHTML = msgs.length
-        ? msgs.map(m => `
-            <div class="lingshi-message-item">
-                <div class="lingshi-message-head">
-                    <strong>${m.user}</strong>
-                    <span>${m.time}</span>
-                </div>
-                <p>${m.text}</p>
-            </div>
-        `).join('')
-        : `<div class="lingshi-message-item"><div class="lingshi-message-head"><strong>系统</strong><span>--</span></div><p>该频道尚无消息，先发一条记录吧。</p></div>`;
-    document.querySelectorAll('.channel-btn').forEach(b => b.classList.toggle('active', b.dataset.channel === currentChannel));
+    el.innerHTML = msgs.length
+        ? msgs.map(m => chatMsgHtml(m)).join('')
+        : `<div class="chat-msg"><div class="chat-msg-avatar chat-msg-avatar-fb">系</div><div class="chat-msg-main"><div class="chat-msg-meta"><strong>系统</strong><span>--</span></div><div class="chat-msg-bubble">该频道尚无消息，先发一条记录吧。</div></div></div>`;
+    el.scrollTop = el.scrollHeight;
 }
-document.querySelectorAll('.channel-btn').forEach(btn => btn.addEventListener('click', () => { currentChannel = btn.dataset.channel; renderLingshi(); }));
-document.getElementById('lingshiSendBtn').addEventListener('click', () => { const text = document.getElementById('lingshiInput').value.trim(); if (!text) return alert('请输入消息'); if (!window.currentUser) return alert('请先登录'); if (!lingshiMessages[currentChannel]) lingshiMessages[currentChannel] = []; lingshiMessages[currentChannel].push({ user: window.currentUser.name, text, time: new Date().toLocaleString('zh-CN') }); safeSet('xuju_lingshi', lingshiMessages); renderLingshi(); document.getElementById('lingshiInput').value = ''; });
+// 好友头像：优先云端论坛头像（cloudUsers 按 username 匹配），无则昵称首字兜底
+function friendAvatarOf(uname) {
+    const u = (cloudUsers || []).find(x => x.username === uname);
+    if (u && u.avatar && /^(data:|https?:|\/)/.test(u.avatar)) return u.avatar;
+    return null;
+}
+function friendDisplayOf(uname) { return accountNick(uname) || uname || '友'; }
+function currentGroupNames() {
+    if (cloudGroupsLoaded && window.currentUser) return cloudGroups.map(g => g.name);
+    return Object.keys(friendGroups || {});
+}
+function groupMemberCount(gn) {
+    if (cloudGroupsLoaded && window.currentUser) {
+        const g = cloudGroups.find(x => x.name === gn);
+        if (g) return (g.members || []).length;
+    }
+    const g = friendGroups[gn];
+    return g ? (g.members || []).length : 0;
+}
+function renderSocialPanel() {
+    const listEl = document.getElementById('socialFriendsList');
+    const groupEl = document.getElementById('socialGroupList');
+    const reqEl = document.getElementById('socialReqList');
+    if (!listEl) return;
+    const me = (window.currentUser || {}).username;
+    // 好友申请（发给我的待处理）
+    if (reqEl) {
+        const pending = friendRequests.filter(r => r.status === 'pending' && r.to_user === me);
+        reqEl.innerHTML = pending.length
+            ? pending.map(r => `<div class="social-req-item"><span class="req-name">${friendNameInTerminal(r.from_user)}<small style="display:block;color:var(--text-muted);font-size:0.6rem;">${r.from_user}</small></span><span class="req-actions"><button class="accept" onclick="acceptFriend('${r.from_user.replace(/'/g,'')}')">通过</button><button onclick="declineFriend('${r.from_user.replace(/'/g,'')}')">拒绝</button></span></div>`).join('')
+            : '<div class="social-empty">暂无好友申请</div>';
+    }
+    // 好友列表：终端显示实名/备注，可编辑备注，可删除
+    listEl.innerHTML = forumFriends.length
+        ? forumFriends.map(f => {
+            const av = friendAvatarOf(f);
+            const nm = friendNameInTerminal(f);
+            const idSafe = f.replace(/[^a-zA-Z0-9_-]/g, '');
+            const avHtml = av ? `<img src="${av}" class="social-avatar-img" alt="">` : `<div class="social-avatar">${(nm || '友').slice(-1)}</div>`;
+            return `<div class="social-friend" onclick="openFriendChat('${f.replace(/'/g,'')}')">${avHtml}<span class="social-friend-name" title="${f}">${nm}<small style="display:block;color:var(--text-muted);font-size:0.58rem;">${friendDisplayOf(f)}</small></span><span class="social-note-edit"><input id="note_${idSafe}" placeholder="备注" value="${(friendNotes[f] || '').replace(/"/g, '&quot;')}" title="${f}" onclick="event.stopPropagation()"><button onclick="event.stopPropagation();editFriendNote('${f.replace(/'/g,'')}',document.getElementById('note_${idSafe}').value)">存</button><button onclick="event.stopPropagation();removeFriend('${f.replace(/'/g,'')}')">✕</button></span></div>`;
+        }).join('')
+        : '<div class="social-empty">暂无好友<br>输入用户名发好友申请</div>';
+    const groupNames = currentGroupNames();
+    const meU = (window.currentUser || {}).username || '';
+    groupEl.innerHTML = groupNames.length
+        ? groupNames.map(g => {
+            const own = (cloudGroupsLoaded && window.currentUser)
+                ? ((cloudGroups.find(x => x.name === g) || {}).owner || '')
+                : '';
+            const isOwner = own === meU;
+            return `<div class="social-group-item" onclick="switchToGroup('${g.replace(/'/g,'')}')"><span>👥 ${g}${isOwner ? ' <em class="sg-owner">· 群主</em>' : ''}</span><small>${groupMemberCount(g)} 人</small>${isOwner ? `<button class="sg-del" onclick="event.stopPropagation();deleteGroup('${g.replace(/'/g,'')}')">删</button>` : ''}</div>`;
+        }).join('')
+        : '<div class="social-empty">暂无群聊<br>添加好友后点「创建群聊」</div>';
+}
+function switchToGroup(gname) {
+    currentChannel = 'g_' + gname;
+    if (typeof switchLingTab === 'function') switchLingTab('chats');
+    renderLingshi();
+}
+// 打开群聊详情（QQ/微信式：右上角 ⋯ → 群主/成员/删除/退出）
+window.openGroupDetail = function () {
+    const gname = (currentChannel || '').indexOf('g_') === 0 ? currentChannel.slice(2) : '';
+    if (!gname) return;
+    const ov = document.getElementById('groupDetailOverlay');
+    const nameEl = document.getElementById('gdGroupName');
+    const ownerEl = document.getElementById('gdOwner');
+    const listEl = document.getElementById('gdMemberList');
+    const cntEl = document.getElementById('gdMemberCount');
+    const delBtn = document.getElementById('gdDeleteBtn');
+    const leaveBtn = document.getElementById('gdLeaveBtn');
+    const closeBtn = document.getElementById('gdCloseBtn');
+    nameEl.textContent = '👥 ' + gname;
+    let members = [], owner = '';
+    if (cloudGroupsLoaded && window.currentUser) {
+        const g = (cloudGroups || []).find(x => x.name === gname);
+        if (g) { members = g.members || []; owner = g.owner || ''; }
+    } else {
+        const g = (friendGroups || {})[gname];
+        if (g) { members = g.members || []; }
+    }
+    ownerEl.textContent = owner ? friendNameInTerminal(owner) + '（' + owner + '）' : '未知';
+    cntEl.textContent = members.length;
+    listEl.innerHTML = members.map(m => {
+        const nm = friendNameInTerminal(m);
+        return `<div class="gd-member"><div class="gd-av">${(nm || '?').slice(-1)}</div><div class="gd-mi"><span class="gd-member-name">${nm}</span><small>${m}</small></div>${m === owner ? '<em class="gd-owner-tag">群主</em>' : ''}</div>`;
+    }).join('') || '<div class="gd-empty">暂无成员</div>';
+    const me = (window.currentUser || {}).username;
+    const isOwner = !!(owner && me && owner === me);
+    if (delBtn) delBtn.style.display = isOwner ? 'inline-block' : 'none';
+    if (leaveBtn) leaveBtn.style.display = isOwner ? 'none' : 'inline-block';
+    if (delBtn) delBtn.onclick = () => { ov.style.display = 'none'; deleteGroup(gname); };
+    if (leaveBtn) leaveBtn.onclick = () => { ov.style.display = 'none'; leaveGroup(gname); };
+    if (closeBtn) closeBtn.onclick = () => { ov.style.display = 'none'; };
+    if (ov) ov.style.display = 'flex';
+};
+window.closeGroupDetail = function () {
+    const ov = document.getElementById('groupDetailOverlay');
+    if (ov) ov.style.display = 'none';
+};
+// 退出群聊（非群主；群主用删除）
+window.leaveGroup = async function (name) {
+    if (!window.currentUser) return alert('请先登录');
+    if (!confirm('退出群聊「' + name + '」？')) return;
+    if (cloudApiBase() && window.currentUser) {
+        const r = await cloudRequest('/api/groups/leave', { name });
+        if (r.ok) { await loadCloudGroups(); if (currentChannel === 'g_' + name) { currentChannel = ''; switchLingTab('chats'); } renderLingshi(); renderSocialPanel(); return; }
+        if (r.status !== 0) { alert(r.data.error || '操作失败'); return; }
+    }
+    const g = friendGroups[name];
+    if (g) { g.members = (g.members || []).filter(m => m !== (window.currentUser || {}).username); if (!g.members.length) delete friendGroups[name]; safeSet('darkalley_friend_groups', friendGroups); }
+    if (currentChannel === 'g_' + name) { currentChannel = ''; switchLingTab('chats'); }
+    renderSocialPanel(); renderLingshi();
+};
+// 点击好友 → 打开与该好友的气泡私聊（切到消息区）
+window.openFriendChat = function(u) {
+    if (!window.currentUser) return alert('请先登录');
+    msgRecipient = u;
+    currentChannel = 'u_' + u;
+    if (typeof switchLingTab === 'function') switchLingTab('chats');
+    if (cloudApiBase() && window.currentUser) loadCloudSocial();
+    renderLingshi();
+};
+function localCreateGroup(n) {
+    friendGroups[n] = { members: forumFriends.slice(), createdAt: Date.now() };
+    groupChats[n] = groupChats[n] || [];
+    safeSet('darkalley_friend_groups', friendGroups);
+    safeSet('darkalley_group_chats', groupChats);
+    renderSocialPanel();
+    renderLingshi();
+}
+// 创建群聊：一键勾选好友（QQ 式）
+function renderGroupFriendChecks() {
+    const wrap = document.getElementById('socialGroupFriends');
+    if (!wrap) return;
+    wrap.innerHTML = forumFriends.length
+        ? forumFriends.map(f => `<label class="social-gf-item"><input type="checkbox" value="${f.replace(/'/g, '')}"><span>${friendNameInTerminal(f)}</span><small>${f}</small></label>`).join('')
+        : '<div class="social-empty">暂无好友可拉</div>';
+}
+function createFriendGroup() {
+    if (!window.currentUser) return alert('请先登录');
+    const form = document.getElementById('socialCreateGroupForm');
+    if (!form) return;
+    const show = form.style.display === 'none';
+    form.style.display = show ? 'block' : 'none';
+    if (show) renderGroupFriendChecks();
+}
+window.confirmCreateGroup = async function () {
+    if (!window.currentUser) return alert('请先登录');
+    const name = (document.getElementById('socialNewGroupName').value || '').trim();
+    if (!name) return alert('请输入群聊名称');
+    if (currentGroupNames().indexOf(name) !== -1) return alert('群聊已存在');
+    const checked = [...document.querySelectorAll('#socialGroupFriends input:checked')].map(i => i.value);
+    if (!checked.length) return alert('请至少勾选一位好友');
+    if (cloudApiBase() && window.currentUser) {
+        const r = await cloudRequest('/api/groups', { name, members: checked });
+        if (r.ok) { document.getElementById('socialNewGroupName').value = ''; document.getElementById('socialCreateGroupForm').style.display = 'none'; await loadCloudGroups(); return; }
+        if (r.status !== 0) { alert(r.data.error || '创建失败'); return; }
+    }
+    friendGroups[name] = { members: checked, createdAt: Date.now() };
+    groupChats[name] = groupChats[name] || [];
+    safeSet('darkalley_friend_groups', friendGroups); safeSet('darkalley_group_chats', groupChats);
+    document.getElementById('socialNewGroupName').value = '';
+    document.getElementById('socialCreateGroupForm').style.display = 'none';
+    renderSocialPanel(); renderLingshi();
+};
+window.deleteGroup = async function (name) {
+    if (!window.currentUser) return alert('请先登录');
+    if (!confirm('删除群聊「' + name + '」？')) return;
+    if (cloudApiBase() && window.currentUser) {
+        const r = await cloudRequest('/api/groups', { name }, 'DELETE');
+        if (r.ok) { await loadCloudGroups(); return; }
+        if (r.status !== 0) { alert(r.data.error || '删除失败'); return; }
+    }
+    delete friendGroups[name]; delete groupChats[name];
+    safeSet('darkalley_friend_groups', friendGroups); safeSet('darkalley_group_chats', groupChats);
+    renderSocialPanel(); renderLingshi();
+};
+function bindSocialEvents() {
+    // 灵犀分区 tab：💬 消息 / 👥 好友 / ✉️ 申请（QQ 式）
+    const tabBtns = document.querySelectorAll('.lingshi-tab');
+    window.switchLingTab = function (t) {
+        tabBtns.forEach(b => b.classList.toggle('active', b.dataset.ltab === t));
+        ['chats', 'friends', 'requests'].forEach(k => {
+            const el = document.getElementById('lsec-' + k);
+            if (el) el.style.display = (k === t) ? '' : 'none';
+        });
+        if (t === 'friends' || t === 'requests') renderSocialPanel();
+    };
+    tabBtns.forEach(b => b.addEventListener('click', () => switchLingTab(b.dataset.ltab)));
+    const addBtn = document.getElementById('socialAddBtn');
+    if (addBtn) addBtn.addEventListener('click', () => {
+        const input = document.getElementById('socialAddInput');
+        const name = input.value.trim();
+        if (!name) return;
+        sendFriendRequest(name);
+        input.value = '';
+    });
+    const createBtn = document.getElementById('socialCreateGroupBtn');
+    if (createBtn) createBtn.addEventListener('click', createFriendGroup);
+    const confirmBtn = document.getElementById('socialConfirmGroupBtn');
+    if (confirmBtn) confirmBtn.addEventListener('click', () => window.confirmCreateGroup());
+    const groupHead = document.getElementById('socialGroupHead');
+    if (groupHead) groupHead.addEventListener('click', toggleGroupList);
+    // 群聊详情：右上角 ⋯ 入口
+    const gdBtn = document.getElementById('lingshiGroupDetailBtn');
+    if (gdBtn) gdBtn.addEventListener('click', () => window.openGroupDetail());
+    // 点击弹层遮罩空白处关闭
+    const gdOverlay = document.getElementById('groupDetailOverlay');
+    if (gdOverlay) gdOverlay.addEventListener('click', e => { if (e.target === gdOverlay) window.closeGroupDetail(); });
+    // 论坛顶部小邮件：点开个人主页私信
+    const mailLink = document.getElementById('forumMailLink');
+    if (mailLink) mailLink.addEventListener('click', e => {
+        e.preventDefault();
+        if (!window.currentUser) { openAwakenModal(); return; }
+        backToProfile();
+        const tab = document.querySelector('.profile-tab[data-tab="messages"]');
+        if (tab) tab.click();
+    });
+}
+bindSocialEvents();
+// 云端好友群聊：加载我加入的群 + 各群消息（跨账号共享）
+async function loadCloudGroups() {
+    if (!cloudApiBase() || !window.currentUser) return;
+    const r = await cloudRequest('/api/groups');
+    if (!r.ok || !Array.isArray(r.data.groups)) return;
+    cloudGroups = r.data.groups;
+    cloudGroupsLoaded = true;
+    for (const g of cloudGroups) {
+        const h = await cloudRequest('/api/groups/history', { name: g.name });
+        if (h.ok && Array.isArray(h.data.messages)) cloudGroupMessages[g.name] = h.data.messages;
+    }
+    // 同步到本地兜底（离线也能看到群名）
+    const fb = {};
+    cloudGroups.forEach(g => { fb[g.name] = { members: g.members, createdAt: g.createdAt }; });
+    friendGroups = fb;
+    safeSet('darkalley_friend_groups', friendGroups);
+    refreshUnread();
+    if (typeof renderSocialPanel === 'function') renderSocialPanel();
+    if (typeof renderLingshiChannels === 'function') renderLingshiChannels();
+    if (typeof renderLingshi === 'function') renderLingshi();
+}
+function toggleGroupList() {
+    const head = document.getElementById('socialGroupHead');
+    const list = document.getElementById('socialGroupList');
+    const btn = document.getElementById('socialCreateGroupBtn');
+    const form = document.getElementById('socialCreateGroupForm');
+    if (!head) return;
+    const collapsed = head.classList.toggle('collapsed');
+    const arrow = head.querySelector('.sg-arrow');
+    if (arrow) arrow.textContent = collapsed ? '▸' : '▾';
+    if (list) list.style.display = collapsed ? 'none' : '';
+    if (btn) btn.style.display = collapsed ? 'none' : '';
+    if (form) form.style.display = collapsed ? 'none' : form.style.display;
+}
+async function sendLingshiMessage() {
+    const inputEl = document.getElementById('lingshiInput');
+    const text = inputEl.value.trim();
+    if (!text) return alert('请输入消息');
+    if (!window.currentUser) return alert('请先登录');
+    // 好友私聊频道 → 私信（云端优先，本地兜底）
+    if (currentChannel && currentChannel.indexOf('u_') === 0) {
+        const to = currentChannel.slice(2);
+        if (cloudApiBase() && window.currentUser) {
+            const r = await cloudRequest('/api/messages', { to, text });
+            if (r.ok && r.data.message) {
+                forumMessages.push(r.data.message);
+                safeSet('darkalley_messages', forumMessages);
+                renderLingshi();
+                document.getElementById('lingshiInput').value = '';
+                return;
+            }
+            if (r.status !== 0) { alert(r.data.error || '发送失败'); return; }
+        }
+        forumMessages.push({ from_user: window.currentUser.username, from_name: currentIdentityName(), to_user: to, to_name: to, text, time: new Date().toLocaleString('zh-CN') });
+        safeSet('darkalley_messages', forumMessages);
+        renderLingshi();
+        document.getElementById('lingshiInput').value = '';
+        return;
+    }
+    // 好友群聊频道 → 云端群聊（云端不可用时本地兜底）
+    if (currentChannel && currentChannel.indexOf('g_') === 0) {
+        const gname = currentChannel.slice(2);
+        if (cloudApiBase() && cloudGroupsLoaded) {
+            const r = await cloudRequest('/api/groups/messages', { name: gname, text });
+            if (r.ok && r.data.message) {
+                (cloudGroupMessages[gname] = cloudGroupMessages[gname] || []).push(r.data.message);
+                renderLingshi();
+                document.getElementById('lingshiInput').value = '';
+                return;
+            }
+            if (r.status !== 0) { alert(r.data.error || '发送失败'); return; }
+        }
+        if (!groupChats[gname]) groupChats[gname] = [];
+        groupChats[gname].push({ user: window.currentUser.name, text, time: new Date().toLocaleString('zh-CN') });
+        safeSet('darkalley_group_chats', groupChats);
+        renderLingshi();
+        document.getElementById('lingshiInput').value = '';
+        return;
+    }
+    // 云端频道 → 全球共享聊天室
+    if (currentChannel === 'cloud') {
+        if (!cloudApiBase()) return alert('云端频道需连接云端');
+        const r = await cloudRequest('/api/chat', { text });
+        if (r.ok && r.data.message) {
+            cloudChatMessages.push(r.data.message);
+            document.getElementById('lingshiInput').value = '';
+            renderLingshi(); return;
+        }
+        if (r.status !== 0) { alert(r.data.error || '发送失败'); return; }
+        return alert('云端频道需连接云端');
+    }
+    if (!lingshiMessages[currentChannel]) lingshiMessages[currentChannel] = [];
+    lingshiMessages[currentChannel].push({ user: window.currentUser.name, text, time: new Date().toLocaleString('zh-CN') });
+    safeSet('xuju_lingshi', lingshiMessages);
+    renderLingshi();
+    inputEl.value = '';
+}
+document.getElementById('lingshiSendBtn').addEventListener('click', sendLingshiMessage);
+document.getElementById('lingshiInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); sendLingshiMessage(); } });
 function updateProfilePanel() {
     if (!window.currentUser) return;
     document.getElementById('profileName').textContent = window.currentUser.name;
     document.getElementById('profileId').textContent = window.currentUser.id;
+    // 终端个人面板头像：统一用账号头像（与论坛一致）
+    const pAv = document.getElementById('profileAvatarImg');
+    if (pAv) {
+        const av = currentUserAvatar();
+        pAv.src = (av && /^(data:|https?:|\/)/.test(av)) ? av : 'images/user-icon.png';
+        pAv.style.display = '';
+    }
     const uid = window.currentUser.id;
     const fav = favGroups(uid);
     const favorites = Object.values(fav).reduce((a, arr) => a.concat(arr), []);
@@ -1804,8 +2984,8 @@ window.editForumPost = function(id) {
     document.getElementById('postEditModal').dataset.postId = post.id;
     document.getElementById('postEditModal').style.display = 'flex';
 };
-function saveEdit() { const newData = { id: document.getElementById('editId').value.trim(), title: document.getElementById('editTitle').value.trim(), category: document.getElementById('editCategory').value, tags: document.getElementById('editTags').value.split(',').map(s=>s.trim()).filter(s=>s), summary: document.getElementById('editSummary').value.trim(), content: document.getElementById('editContent').value.trim() }; if(!newData.id||!newData.title) return alert('必填'); if(editingId) { const idx = archiveData.findIndex(a=>a.id===editingId); if(idx>-1) archiveData[idx]=newData; } else archiveData.push(newData); safeSet('xuju_archive', archiveData); document.getElementById('editModal').style.display='none'; renderAdminList(); renderArchiveList(); }
-function deleteArchive() { if(!editingId||!confirm('删除？')) return; archiveData = archiveData.filter(a=>a.id!==editingId); safeSet('xuju_archive', archiveData); document.getElementById('editModal').style.display='none'; renderAdminList(); renderArchiveList(); }
+async function saveEdit() { const newData = { id: document.getElementById('editId').value.trim(), title: document.getElementById('editTitle').value.trim(), category: document.getElementById('editCategory').value, tags: document.getElementById('editTags').value.split(',').map(s=>s.trim()).filter(s=>s), summary: document.getElementById('editSummary').value.trim(), content: document.getElementById('editContent').value.trim() }; if(!newData.id||!newData.title) return alert('必填'); if (cloudApiBase() && window.currentUser) { const r = await cloudRequest('/api/archives', newData, 'POST'); if (r.ok) { await loadCloudArchives(); } else if (r.status !== 0) { alert('云端保存失败：' + ((r.data && r.data.error) || '未知错误')); return; } } if(editingId) { const idx = archiveData.findIndex(a=>a.id===editingId); if(idx>-1) archiveData[idx]=newData; } else archiveData.push(newData); safeSet('xuju_archive', archiveData); document.getElementById('editModal').style.display='none'; renderAdminList(); renderArchiveList(); }
+async function deleteArchive() { if(!editingId||!confirm('删除？')) return; const delId = editingId; if (cloudApiBase() && window.currentUser && isCloudArchive(delId)) { const r = await cloudRequest('/api/archives', { id: delId }, 'DELETE'); if (r.ok) { await loadCloudArchives(); } else if (r.status !== 0) { alert('云端删除失败：' + ((r.data && r.data.error) || '未知错误')); return; } } archiveData = archiveData.filter(a=>a.id!==delId); safeSet('xuju_archive', archiveData); document.getElementById('editModal').style.display='none'; renderAdminList(); renderArchiveList(); }
 function saveForumPostEdit() {
     const postId = document.getElementById('postEditModal').dataset.postId;
     const title = document.getElementById('postEditTitle').value.trim();
@@ -1894,12 +3074,12 @@ function setupEditorEvents() {
 
 // ============ 异常信号监测网（离线 SVG 网络图，替代 Leaflet 在线地图） ============
 const SIGNAL_SITES = [
-    { id:'a', name:'京兆府', level:'总局', status:'HQSCA 核心', time:'持续', desc:'华墟共和国首都，全域墟化现象管控总局总部驻地，全国监测中枢，六大司局常驻，能量基准恒定。' },
-    { id:'b', name:'临川府', level:'观测', status:'民俗社', time:'持续', desc:'云江府省会，临川民俗研究社团活动区域，锚点能量平稳，标记为长期观测点位。' },
+    { id:'a', name:'京兆府', level:'总局', status:'HQSCA 核心', time:'持续', desc:'华墟共和国首都，全域墟化现象管控总局总部驻地，全国监测中枢，八大司局常驻，能量基准恒定。' },
+    { id:'b', name:'临川府', level:'观测', status:'民俗社', time:'持续', desc:'云江省省会，临川民俗研究社团活动区域，锚点能量平稳，标记为长期观测点位。' },
     { id:'c', name:'沧溟府', level:'辛', status:'模因污染', time:'2025-03-15', desc:'沿海港口城市，认知污染残留与"沧溟风暴"能量波形高度吻合，与沧溟-S级风暴事件同源，需持续追踪。' },
     { id:'d', name:'宁州府', level:'观测', status:'学术重镇', time:'持续', desc:'华墟学术重镇，玄理科研院分院驻地，收容物研究核心区，多处试验场能量读数稳定。' },
-    { id:'e', name:'玄水府', level:'庚', status:'古墓遗址', time:'2024-08-11', desc:'玄水省省会，多处古墓遗址频发规则型墟域，外勤小队重点巡防区，夜间信号间歇波动。' },
-    { id:'f', name:'赤岭府', level:'辛', status:'民俗禁忌', time:'2026-01-05', desc:'赤岭省省会，西南山区民俗保留完整，山野墟域事件频发，局地锚点能量偏高。' },
+    { id:'e', name:'潭州府', level:'庚', status:'古墓遗址', time:'2024-08-11', desc:'玄水省省会，多处古墓遗址频发规则型墟域，外勤小队重点巡防区，夜间信号间歇波动。' },
+    { id:'f', name:'丹霞府', level:'辛', status:'民俗禁忌', time:'2026-01-05', desc:'赤岭省省会，西南山区民俗保留完整，山野墟域事件频发，局地锚点能量偏高。' },
     { id:'g', name:'南荒岭', level:'绝危', status:'无人区警戒', time:'持续', desc:'西南无人区，己阶以上高危墟域多发区，禁止未授权进入，全局最高响应，探测阵列全天候运转。' },
     { id:'h', name:'沙洲府', level:'待核', status:'荒漠异常', time:'2026-02-01', desc:'戈壁省首府，西北荒漠深处多次侦测到异常能量残留，初步判定为收容物级，待现场核验。' }
 ];
@@ -2023,18 +3203,19 @@ function shiChenLabel() {
     return '☾ ' + arr[Math.floor(((h + 1) % 24) / 2)] + '时';
 }
 
-// ============ 🏛️ 总局六大司局 ============
+// ============ 🏛️ 总局八大司局 ============
 function renderBureau() {
     const grid = document.getElementById('bureauDeptGrid');
     if (!grid) return;
     grid.innerHTML = (BUREAU_DEPARTMENTS || []).map(d => `
-        <div class="bureau-dept-card">
+        <div class="bureau-dept-card" onclick="this.classList.toggle('open')">
             <div class="bureau-dept-head">
                 <span class="bureau-dept-icon">${d.icon}</span>
-                <div>
+                <div class="bureau-dept-info">
                     <div class="bureau-dept-name">${d.name}</div>
                     <div class="bureau-dept-id">${d.id}</div>
                 </div>
+                <span class="bureau-dept-arrow">▾</span>
             </div>
             <div class="bureau-dept-func">${d.func}</div>
             <div class="bureau-dept-status"><span class="status-dot"></span>${d.status}</div>
@@ -2092,13 +3273,14 @@ function renderEntities() {
     const list = document.getElementById('entityList');
     if (!list) return;
     const entities = CONTAINMENT_ENTITIES || [];
-    list.innerHTML = entities.map(ent => {
+    const cardHtml = (ent) => {
         const lv = formatLevel(ent.level);
         return `
-        <div class="entity-card">
+        <div class="entity-card${ent.contained ? ' entity-contained' : ''}">
             <div class="entity-head">
-                <span class="entity-id">${ent.id}</span>
+                <span class="entity-id">${ent.id}</span>${ent.cat6 ? `<span class="entity-cat6">${ent.cat6}</span>` : ''}
                 <span class="entity-level ${lv.cls}">${lv.label}</span>
+                ${ent.contained ? '<span class="entity-held">在押</span>' : ''}
             </div>
             <div class="entity-name">${ent.name}<span class="entity-cls">${ent.cls}</span></div>
             <button class="entity-expand-btn" type="button">展开形态详情 ▾</button>
@@ -2107,10 +3289,21 @@ function renderEntities() {
                 <div class="entity-block"><h4>行为模式</h4><p>${ent.behavior}</p></div>
                 <div class="entity-block"><h4>弱点</h4><ul class="entity-weak">${ent.weaknesses.map(w => `<li>${w}</li>`).join('')}</ul></div>
                 <div class="entity-block"><h4>首次发现</h4><p>${ent.firstFound}</p></div>
+                ${ent.containment ? `<div class="entity-block"><h4>收容状态</h4><p class="entity-related">⚠ 在押 · ${ent.containment}</p></div>` : ''}
                 <div class="entity-block"><h4>关联收容物</h4><p class="entity-related">${ent.related}</p></div>
             </div>
         </div>`;
-    }).join('');
+    };
+    const held = entities.filter(e => e.contained);
+    const free = entities.filter(e => !e.contained);
+    let html = '';
+    if (held.length) {
+        html += `<div class="entity-group-title">⛓ 在押 · 收容中（${held.length}）</div>`;
+        html += held.map(cardHtml).join('');
+    }
+    html += `<div class="entity-group-title">👁 在册 / 观测中（${free.length}）</div>`;
+    html += free.map(cardHtml).join('');
+    list.innerHTML = html;
     list.querySelectorAll('.entity-expand-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const card = this.closest('.entity-card'); if (!card) return;
@@ -2199,10 +3392,10 @@ function renderHomeEmbed(panel) {
     const openBtn = (p, label) => `<button class="embed-open" data-panel="${p}">进入完整 ${label} →</button>`;
     let html = '';
     if (panel === 'bureau') {
-        html = `<div class="embed-head"><span class="embed-title">🏛 总局架构 · 六大司局</span>${openBtn('bureau', '面板')}</div>
+        html = `<div class="embed-head"><span class="embed-title">🏛 总局架构 · 八大司局</span>${openBtn('bureau', '面板')}</div>
             <div class="bureau-dept-grid">${(BUREAU_DEPARTMENTS || []).map(d => `
-                <div class="bureau-dept-card">
-                    <div class="bureau-dept-head"><span class="bureau-dept-icon">${d.icon}</span><div><div class="bureau-dept-name">${d.name}</div><div class="bureau-dept-id">${d.id}</div></div></div>
+                <div class="bureau-dept-card" onclick="this.classList.toggle('open')">
+                    <div class="bureau-dept-head"><span class="bureau-dept-icon">${d.icon}</span><div class="bureau-dept-info"><div class="bureau-dept-name">${d.name}</div><div class="bureau-dept-id">${d.id}</div></div><span class="bureau-dept-arrow">▾</span></div>
                     <div class="bureau-dept-func">${d.func}</div>
                     <div class="bureau-dept-status"><span class="status-dot"></span>${d.status}</div>
                 </div>`).join('')}</div>`;
@@ -2334,6 +3527,41 @@ function renderCollectionList(list) {
 function renderCollections() { renderCollectionList(document.getElementById('collectionList')); }
 function renderFolkCollections() { renderCollectionList(document.getElementById('folkCollectionList')); }
 
+// ============ 🧪 测试管理员账号自动填充（本地调试用） ============
+// 登录 HUAXU（管理员局长号）且从未填充过时，自动注入：满积分 + 全部商城物品 + 高等级经验 + 签到历史，
+// 方便直接查看头像框 / 等级经验条 / 成就勋章效果。其他账号不受影响。
+// 用独立标记 darkalley_seed_map 记录是否已填充（而不是用积分判断，避免云端积分同步后漏填物品/经验）。
+function seedTestAccount(force) {
+    if (!window.currentUser || window.currentUser.username !== 'HUAXU') return;
+    const uid = window.currentUser.id; // = 'HUAXU'
+    const seeded = safeGetJSON('darkalley_seed_map', {}) || {};
+    if (!force && seeded[uid]) return; // 已填充过则跳过（避免覆盖用户手动改动）
+    // ① 积分：至少 99999（取 max，云端同步后也不会低于此值）
+    const points = safeGetJSON('darkalley_points_map', {}) || {};
+    points[uid] = Math.max(points[uid] || 0, 99999);
+    safeSet('darkalley_points_map', points);
+    // ② 拥有全部商城物品（论坛商城 f1-f14 + 终端商城 t1-t11）
+    const owned = safeGetJSON('darkalley_owned_map', {}) || {};
+    owned[uid] = [...(FORUM_SHOP_ITEMS || []).map(i => i.id), ...(TERMINAL_SHOP_ITEMS || []).map(i => i.id)];
+    safeSet('darkalley_owned_map', owned);
+    // ③ 经验：2950 → Lv.30，经验条 50/100 便于查看进度
+    const exp = safeGetJSON('darkalley_exp_map', {}) || {};
+    exp[uid] = 2950;
+    safeSet('darkalley_exp_map', exp);
+    // ④ 签到历史：30 天连签（到昨天为止），今天可再签一次看效果（仅本地模式；云端以真实签到为准）
+    if (!force) {
+        const dates = [];
+        for (let i = 30; i >= 1; i--) {
+            const d = new Date(); d.setDate(d.getDate() - i);
+            dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+        }
+        checkinState = { streak: 30, total: 30, points: 500, lastDate: dates[dates.length - 1], dates };
+        safeSet('darkalley_checkin', checkinState);
+    }
+    seeded[uid] = true;
+    safeSet('darkalley_seed_map', seeded);
+    console.log('[seedTestAccount] 已为 HUAXU 注入测试数据：积分 ≥99999 / 全部商城物品 / 经验 2950(Lv.30) / 签到 30 天');
+}
 // ============ 🛒 积分商城（论坛商城 + 终端商城分离） ============
 // 积分/拥有状态按账号存储：论坛游客 → guest，终端员工 → 各自编号（如 ADMIN-001）
 function getPoints() {
@@ -2345,8 +3573,18 @@ function getPoints() {
 function addPoints(n) {
     const m = safeGetJSON('darkalley_points_map', {}) || {};
     const uid = window.currentUser ? window.currentUser.id : 'guest';
-    m[uid] = (m[uid] || 0) + (n || 0);
+    m[uid] = Math.max(0, (m[uid] || 0) + (n || 0));
     safeSet('darkalley_points_map', m);
+    // 云端同步（账号级积分，跨设备；fire-and-forget，连不上不影响本地）
+    if (cloudApiBase() && window.currentUser && n) {
+        cloudRequest('/api/points', { delta: n }).then(r => {
+            if (r.ok && r.data && r.data.points !== undefined) {
+                const mm = safeGetJSON('darkalley_points_map', {}) || {};
+                mm[uid] = r.data.points;
+                safeSet('darkalley_points_map', mm);
+            }
+        }).catch(() => {});
+    }
     return m[uid];
 }
 function addPointsFor(uid, n) {
@@ -2354,11 +3592,85 @@ function addPointsFor(uid, n) {
     m[uid] = (m[uid] || 0) + (n || 0);
     safeSet('darkalley_points_map', m);
 }
+// —— 论坛经验 / 等级系统 ——
+function getExpMap() { return safeGetJSON('darkalley_exp_map', {}); }
+function getExp() { const m = getExpMap(); const uid = window.currentUser ? window.currentUser.id : 'guest'; return m[uid] || 0; }
+function addExp(n) {
+    const m = getExpMap();
+    const uid = window.currentUser ? window.currentUser.id : 'guest';
+    m[uid] = (m[uid] || 0) + n;
+    safeSet('darkalley_exp_map', m);
+    renderUserExp();
+}
+function userLevel(exp) { return Math.min(50, Math.floor((exp || 0) / 100) + 1); }
+function renderUserExp() {
+    const row = document.getElementById('userExpRow');
+    if (!row) return;
+    if (!window.currentUser) { row.style.display = 'none'; return; }
+    const exp = getExp();
+    const lv = userLevel(exp);
+    const cur = exp % 100, pct = Math.round((cur / 100) * 100);
+    row.style.display = '';
+    const lvEl = document.getElementById('userLvText'); if (lvEl) lvEl.textContent = 'Lv.' + lv;
+    const fill = document.getElementById('userExpFill'); if (fill) fill.style.width = pct + '%';
+    const num = document.getElementById('userExpNum'); if (num) num.textContent = cur + '/100';
+    const cl = document.getElementById('checkinLevel'); if (cl) cl.textContent = 'Lv.' + lv;
+}
 function getOwned() {
     let o = safeGetJSON('darkalley_owned_map', null);
     if (!o) { const legacy = safeGetJSON('darkalley_owned', []); o = { guest: Array.isArray(legacy) ? legacy : [] }; safeSet('darkalley_owned_map', o); }
     const uid = window.currentUser ? window.currentUser.id : 'guest';
     return o[uid] || [];
+}
+// 当前生效的头像框（优先用户手动指定 darkalley_frame，否则最后购买的；未拥有则无）
+function activeAvatarFrame() {
+    const owned = getOwned();
+    const frames = (FORUM_SHOP_ITEMS || []).filter(it => it.cat === '头像框' && it.frameCls && owned.includes(it.id));
+    if (!frames.length) return null;
+    const chosen = safeGetJSON('darkalley_frame', '');
+    if (chosen && frames.some(f => f.id === chosen)) return frames.find(f => f.id === chosen);
+    return frames[frames.length - 1];
+}
+function setActiveFrame(id) {
+    safeSet('darkalley_frame', id || '');
+    if (typeof updateForumIdentityUI === 'function') updateForumIdentityUI();
+    if (typeof renderForumProfile === 'function') renderForumProfile();
+    if (typeof renderEquipPanel === 'function') renderEquipPanel();
+    if (typeof renderForumBackpack === 'function') renderForumBackpack();
+}
+function applyAvatarFrame(el) {
+    if (!el) return;
+    el.classList.remove('frame-fr-grey', 'frame-fr-red', 'frame-fr-gold', 'frame-fr-dark');
+    const frame = activeAvatarFrame();
+    if (frame) el.classList.add('frame-' + frame.frameCls);
+}
+// —— 🏮 论坛皮肤实装（f10 纸灯巷 / f11 月下冷夜）——
+function getForumSkin() {
+    const sk = safeGetJSON('darkalley_forum_skin', 'default') || 'default';
+    if (sk !== 'default') {
+        const it = (FORUM_SHOP_ITEMS || []).find(i => i.id === sk && i.cat === '皮肤');
+        if (!it || getOwned().indexOf(sk) === -1) return 'default';
+    }
+    return sk;
+}
+function applyForumSkin(name) {
+    const fc = document.getElementById('forumContainer');
+    if (!fc) return;
+    name = name || 'default';
+    fc.classList.remove('skin-paperlantern', 'skin-moonnight');
+    if (name === 'f11') fc.classList.add('skin-moonnight');
+    safeSet('darkalley_forum_skin', name);
+    document.querySelectorAll('.bp-btn[data-skin]').forEach(b => b.classList.toggle('on', b.dataset.skin === name));
+}
+function setForumSkin(name) {
+    applyForumSkin(name);
+    if (typeof renderEquipPanel === 'function') renderEquipPanel();
+    if (typeof renderForumBackpack === 'function') renderForumBackpack();
+}
+function setTerminalSkin(id) {
+    applyTerminalTheme(id === 't10' ? 'night' : 'blood');
+    if (typeof renderEquipPanel === 'function') renderEquipPanel();
+    if (typeof renderForumBackpack === 'function') renderForumBackpack();
 }
 function ownItem(id) {
     const o = safeGetJSON('darkalley_owned_map', {}) || {};
@@ -2459,13 +3771,32 @@ function renderThemeOptions() {
     if (!wrap) return;
     const owned = getOwned();
     const cur = safeGetJSON('darkalley_theme', 'default') || 'default';
+    const shopIds = (TERMINAL_SHOP_ITEMS || []).map(i => i.id);
     const opts = [
-        { theme: 'default', label: '◐ 默认 · 猩红', locked: false },
-        { theme: 'night', label: '🌑 暗夜 · 玄青', locked: owned.indexOf('t10') === -1 },
-        { theme: 'blood', label: '🌕 血月 · 赤金', locked: owned.indexOf('t11') === -1 }
-    ];
+        { theme: 'default', label: '◐ 默认 · 猩红', locked: false, item: null },
+        { theme: 'night', label: '🌑 暗夜 · 玄青', locked: owned.indexOf('t10') === -1, item: 't10' },
+        { theme: 'blood', label: '🌕 血月 · 赤金', locked: owned.indexOf('t11') === -1, item: 't11' }
+    ].filter(o => o.item === null || shopIds.indexOf(o.item) !== -1);
     wrap.innerHTML = opts.map(o => `<button class="theme-opt${o.locked ? ' locked' : ''}${cur === o.theme ? ' active' : ''}" data-theme="${o.theme}" ${o.locked ? 'title="需在终端商城兑换（暗夜皮肤）"' : ''} type="button">${o.label}${o.locked ? ' 🔒' : ''}</button>`).join('');
-    wrap.querySelectorAll('.theme-opt:not(.locked)').forEach(b => b.addEventListener('click', () => applyTerminalTheme(b.dataset.theme)));
+    wrap.querySelectorAll('.theme-opt:not(.locked)').forEach(b => b.addEventListener('click', () => { applyTerminalTheme(b.dataset.theme); if (typeof renderEquipPanel === 'function') renderEquipPanel(); if (typeof renderForumBackpack === 'function') renderForumBackpack(); }));
+}
+// 🎒 终端个人面板 · 背包实装（终端皮肤 + 头像框 + 论坛皮肤）
+function renderEquipPanel() {
+    if (typeof renderThemeOptions === 'function') renderThemeOptions();
+    const owned = getOwned();
+    const fo = document.getElementById('frameOptions');
+    if (fo) {
+        const frames = (FORUM_SHOP_ITEMS || []).filter(it => it.cat === '头像框' && it.frameCls && owned.includes(it.id));
+        const cur = activeAvatarFrame();
+        fo.innerHTML = frames.length ? frames.map(f => `<div class="bp-item"><span class="bp-ico">${f.ico}</span><span class="bp-name">${f.name}</span><button class="bp-btn${cur && cur.id === f.id ? ' on' : ''}" onclick="setActiveFrame('${f.id}')">${cur && cur.id === f.id ? '使用中' : '使用'}</button></div>`).join('') : '<div class="bp-empty">尚未拥有头像框</div>';
+    }
+    const fs = document.getElementById('forumSkinOptions');
+    if (fs) {
+        const cur = getForumSkin();
+        const ownSkins = (FORUM_SHOP_ITEMS || []).filter(it => it.cat === '皮肤' && owned.includes(it.id));
+        fs.innerHTML = `<div class="bp-item"><span class="bp-ico">☽</span><span class="bp-name">默认 · 暗巷</span><button class="bp-btn${cur === 'default' ? ' on' : ''}" onclick="setForumSkin('default')">${cur === 'default' ? '使用中' : '使用'}</button></div>` +
+            (ownSkins.length ? ownSkins.map(s => `<div class="bp-item"><span class="bp-ico">${s.ico}</span><span class="bp-name">${s.name}</span><button class="bp-btn${cur === s.id ? ' on' : ''}" onclick="setForumSkin('${s.id}')">${cur === s.id ? '使用中' : '使用'}</button></div>`).join('') : '');
+    }
 }
 
 function renderMyListings() {
@@ -2500,16 +3831,38 @@ function bindListingForm() {
     });
 }
 
-// —— 论坛商城（巷口杂货铺 · 民众向：护身/头像框/皮肤等） ——
+// —— 论坛商城（巷口杂货铺 · 民众向：护身/头像框/皮肤等，含「🎒 背包」实装） ——
+function backpackItemsHtml() {
+    const owned = getOwned();
+    const frame = activeAvatarFrame();
+    const skin = getForumSkin();
+    const theme = safeGetJSON('darkalley_theme', 'default') || 'default';
+    const itemHtml = (it) => {
+        let on = false, act = '';
+        if (it.cat === '头像框' && it.frameCls) { on = !!(frame && frame.id === it.id); act = `onclick="setActiveFrame('${it.id}')"`; }
+        else if (it.cat === '皮肤') { on = skin === it.id; act = `onclick="setForumSkin('${it.id}')"`; }
+        else if (it.id === 't10' || it.id === 't11') { const th = it.id === 't10' ? 'night' : 'blood'; on = theme === th; act = `onclick="setTerminalSkin('${it.id}')"`; }
+        const btn = act ? `<button class="bp-btn${on ? ' on' : ''}" ${act}>${on ? '使用中' : '使用'}</button>` : `<button class="bp-btn" disabled>无实装</button>`;
+        return `<div class="bp-item"><span class="bp-ico">${it.ico}</span><span class="bp-name">${it.name}</span><span class="bp-cat">${it.cat}</span>${btn}</div>`;
+    };
+    const fItems = (FORUM_SHOP_ITEMS || []).filter(i => owned.includes(i.id));
+    const tItems = (TERMINAL_SHOP_ITEMS || []).filter(i => owned.includes(i.id));
+    if (!fItems.length && !tItems.length) return '<div class="bp-empty">背包空空如也，先去商城兑换吧 🎒</div>';
+    const head = (t) => `<div class="bp-cat-label">${t}</div>`;
+    return head('论坛 · 巷口杂货铺') + `<div class="bp-grid">${fItems.length ? fItems.map(itemHtml).join('') : '<div class="bp-empty">暂无论坛物品</div>'}</div>`
+         + head('终端 · 总局物资部') + `<div class="bp-grid">${tItems.length ? tItems.map(itemHtml).join('') : '<div class="bp-empty">暂无终端物品</div>'}</div>`;
+}
 function renderForumShop() {
     const top = document.getElementById('forumShopPoints');
     if (top) top.textContent = getPoints();
     const tabs = document.getElementById('forumShopCatTabs');
     const list = document.getElementById('forumShopList');
     if (!tabs || !list) return;
-    const cats = ['全部', '护身', '消耗品', '头像框', '皮肤', '收集品'];
-    tabs.innerHTML = cats.map(c => `<button class="shop-cat-tab${activeForumShopCat === c ? ' active' : ''}" data-cat="${c}">${c}</button>`).join('');
+    const cats = [['全部', '全部'], ['护身', '护身'], ['消耗品', '消耗品'], ['头像框', '头像框'], ['皮肤', '皮肤'], ['收集品', '收集品'], ['backpack', '🎒 背包']];
+    tabs.innerHTML = cats.map(([k, label]) => `<button class="shop-cat-tab${activeForumShopCat === k ? ' active' : ''}" data-cat="${k}">${label}</button>`).join('');
     tabs.querySelectorAll('.shop-cat-tab').forEach(b => b.addEventListener('click', () => { activeForumShopCat = b.dataset.cat; renderForumShop(); }));
+    if (activeForumShopCat === 'backpack') { list.classList.add('bp-mode'); list.innerHTML = backpackItemsHtml(); return; }
+    list.classList.remove('bp-mode');
     const items = (FORUM_SHOP_ITEMS || []).filter(i => activeForumShopCat === '全部' || i.cat === activeForumShopCat);
     const owned = getOwned();
     list.innerHTML = items.map(it => {
@@ -2582,6 +3935,9 @@ function initFog() {
 // ============ 初始化 ============
 try {
     restoreSession();
+    loadCloudPosts(); // 初始同步云端帖子（游客也能看）
+    loadCloudArchives(); // 初始同步云端档案（游客也能看）
+    loadCloudUsers();
     updateForumIdentityUI();
     initFog();
     bindGameView();

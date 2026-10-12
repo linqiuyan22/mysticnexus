@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>暗巷 | 匿名灵异论坛</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=065">
 </head>
 <body>
     <!-- 动态迷雾背景（3 层，鼠标视差，不干扰内容） -->
@@ -44,6 +44,7 @@
                 <a href="#" class="nav-link active" id="forumHomeLink">首页</a>
                 <a href="#" class="nav-link" id="forumNewPostLink">发帖</a>
                 <a href="#" class="nav-link" id="forumProfileLink">我的</a>
+                <a href="#" class="nav-link forum-mail-link" id="forumMailLink" title="消息通知">✉️<span class="mail-badge" id="forumMailBadge" style="display:none;">0</span></a>
                 <a href="#" class="nav-link" id="forumAccountLink" title="登录 / 注册">登录</a>
             </nav>
         </header>
@@ -95,7 +96,7 @@
             <input id="forumSearchInput" type="text" placeholder="搜索帖子 / 关键词 / 作者..." autocomplete="off">
         </div>
         <div class="board-tabs">
-            <button class="board-tab active" data-board="all"><span class="tab-ico">◉</span>全部</button>
+            <button class="board-tab active" data-board="all"><span class="tab-ico">🗂️</span>全部</button>
             <button class="board-tab" data-board="灵异见闻"><span class="tab-ico">👁️</span>灵异见闻</button>
             <button class="board-tab" data-board="巷中秘闻"><span class="tab-ico">🌫️</span>巷中秘闻</button>
             <button class="board-tab" data-board="求助解惑"><span class="tab-ico">🕯️</span>求助解惑</button>
@@ -111,6 +112,7 @@
                     <div class="forum-user-avatar"><span id="forumUserAvatar">☽</span></div>
                     <div class="forum-user-name" id="forumUserName">匿名访客</div>
                     <div class="forum-user-sub" id="forumUserSub">未登录 · 可浏览，不可发言</div>
+                    <div class="user-exp-row" id="userExpRow" style="display:none;"><span class="user-lv" id="userLvText">Lv.1</span><div class="exp-bar"><div class="exp-bar-fill" id="userExpFill"></div></div><span class="exp-num" id="userExpNum">0/100</span></div>
                     <button id="forumLoginBtn" class="forum-login-btn" type="button">☽ 登录 / 注册</button>
                     <button id="forumLogoutBtn" class="forum-logout-btn" type="button" style="display:none;">退出</button>
                     <div class="forum-user-stats">
@@ -210,13 +212,31 @@
                     <h2>发布新讨论</h2>
                     <select id="newPostBoard"><option value="灵异见闻">灵异见闻</option><option value="巷中秘闻">巷中秘闻</option><option value="求助解惑">求助解惑</option><option value="民俗考据">民俗考据</option></select>
                     <input type="text" id="newPostTitle" placeholder="标题"><textarea id="newPostContent" placeholder="内容" rows="8"></textarea>
+                    <div class="new-post-img-row">
+                        <button id="newPostImgBtn" class="admin-btn" type="button">🖼 上传图片</button>
+                        <input type="file" id="newPostImageFile" accept="image/*" style="display:none;">
+                        <div id="newPostImagePreview" class="new-post-img-preview" style="display:none;">
+                            <img id="newPostImagePreviewImg" alt="">
+                            <button id="newPostImageRemove" type="button">✕ 移除</button>
+                        </div>
+                    </div>
                     <button class="submit-btn" id="submitNewPostBtn">发布</button>
                 </section>
                 <section id="forumProfileView" class="forum-profile-container" style="display:none;">
                     <button class="back-btn" id="profileBackBtn">← 返回</button>
                     <div class="forum-profile-header">
-                        <img src="images/user-icon.png" onerror="this.src=''; this.style.display='none';" alt="用户头像" style="width:50px; height:50px; border-radius:50%; border:1px solid var(--accent-red); background:#333;">
-                        <div><h2 id="forumProfileName">匿名</h2><div class="forum-profile-sub" id="forumProfileSub">已签到 0 天 · Lv.1</div></div>
+                        <div class="forum-profile-avatar-wrap">
+                            <img id="forumProfileAvatarImg" src="images/user-icon.png" onerror="if(this.src!=='images/user-icon.png'){this.src='images/user-icon.png'; this.style.display='';}" alt="用户头像" style="width:56px; height:56px; border-radius:50%; border:1px solid var(--accent-red); background:#333; object-fit:cover;">
+                            <button id="forumChangeAvatarBtn" class="forum-avatar-btn" title="更换头像">✎</button>
+                        </div>
+                        <div style="flex:1;min-width:0;"><h2 id="forumProfileName">匿名</h2><div class="forum-profile-sub" id="forumProfileSub">已签到 0 天 · Lv.1</div>
+                            <div class="forum-avatar-tools" id="forumAvatarTools" style="display:none;">
+                                <input type="text" id="forumAvatarEmoji" placeholder="emoji 头像，如 🦉" maxlength="6" style="width:120px;padding:5px 8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-deep);color:var(--text-main);">
+                                <button id="forumAvatarEmojiBtn" class="admin-btn">用 emoji</button>
+                                <button id="forumAvatarUploadBtn" class="admin-btn">上传图片</button>
+                                <input type="file" id="forumAvatarFile" accept="image/*" style="display:none;">
+                            </div>
+                        </div>
                     </div>
                     <div class="profile-tabs">
                         <button class="profile-tab active" data-tab="overview">概览</button>
@@ -233,11 +253,21 @@
                             <div class="profile-ov-item"><b id="ovPoints">0</b><span>积分</span></div>
                         </div>
                         <div class="profile-section"><h3>🎯 快捷操作</h3><div class="profile-quick-actions"><button id="quickCheckinBtn" class="admin-btn">☾ 立即签到</button><button id="quickNewPostBtn" class="admin-btn">✍ 去发帖</button></div></div>
+                        <div class="profile-section"><h3>🏅 成就勋章</h3><div class="badge-wall" id="badgeWall"></div></div>
                     </div>
                     <div id="mypostsPanel" class="profile-tab-panel" style="display:none;"><div class="profile-myposts" id="mypostsList"></div></div>
                     <div id="checkinPanel" class="profile-tab-panel" style="display:none;"><div class="checkin-history" id="checkinHistory"></div></div>
                     <div id="friendsPanel" class="profile-tab-panel" style="display:none;"><div class="friends-list" id="friendsList"></div><button id="addFriendBtn" class="admin-btn">+ 添加好友</button></div>
-                    <div id="messagesPanel" class="profile-tab-panel" style="display:none;"><div class="messages-list" id="messagesList"></div><div class="message-form"><input type="text" id="messageRecipient" placeholder="收件人"><input type="text" id="messageContent" placeholder="内容"><button id="sendMessageBtn">发送</button></div></div>
+                    <div id="messagesPanel" class="profile-tab-panel" style="display:none;">
+                        <div class="message-chat">
+                            <div class="msg-contact-list" id="msgContactList"></div>
+                            <div class="msg-chat-main">
+                                <div class="msg-chat-head" id="msgChatHead">从好友列表选择收件人</div>
+                                <div class="msg-chat-body" id="msgChatBody"></div>
+                                <div class="msg-chat-input"><input type="text" id="messageContent" placeholder="输入消息，Enter 发送..."><button id="sendMessageBtn">发送</button></div>
+                            </div>
+                        </div>
+                    </div>
                 </section>
             </main>
         </div>
@@ -245,6 +275,23 @@
             <p>暗巷 - 匿名灵异讨论区 <span class="shi-chen" id="shiChen"></span><span class="forum-clock" id="forumClock"></span></p>
             <p class="footer-awaken"><a href="#" id="awakenEntryFooter">[ 如果你知道那扇门 ]</a></p>
         </footer>
+    </div>
+
+    <!-- 头像裁剪弹层 -->
+    <div id="cropModal" class="crop-overlay" style="display:none;">
+        <div class="crop-ui">
+            <h3>✂ 裁剪头像</h3>
+            <div class="crop-stage" id="cropStage">
+                <img id="cropImage" alt="" draggable="false">
+                <div class="crop-mask"></div>
+                <div class="crop-box"></div>
+            </div>
+            <div class="crop-tip">拖动图片调整位置 · 滚轮缩放 · 中间方形即头像</div>
+            <div class="crop-actions">
+                <button id="cropCancelBtn" type="button">取消</button>
+                <button id="cropConfirmBtn" type="button">✓ 确认</button>
+            </div>
+        </div>
     </div>
 
     <!-- 账号弹窗：登录 / 注册 -->
@@ -291,26 +338,73 @@
                 <div class="form-group">
                     <label class="input-label">身份类型</label>
                     <div class="reg-roletype">
-                        <label class="reg-role-opt"><input type="radio" name="regRoleType" value="custom" checked> 自创角色</label>
-                        <label class="reg-role-opt"><input type="radio" name="regRoleType" value="staff"> 扮演员工</label>
+                        <label class="reg-role-opt"><input type="radio" name="regRoleType" value="self" checked> 自己带入（直接变员工）</label>
+                        <label class="reg-role-opt"><input type="radio" name="regRoleType" value="awakened"> 扮演角色（觉醒者）</label>
                     </div>
                 </div>
-                <div class="form-group" id="regCustomWrap">
-                    <label class="input-label">角色名</label>
-                    <input type="text" id="regCustomName" placeholder="你的角色名">
-                    <label class="input-label">头像（可选，emoji）</label>
-                    <input type="text" id="regCustomAvatar" placeholder="🙂">
+                <div class="form-group" id="regSelfWrap">
+                    <label class="input-label">你的名字（将作为员工显示名）</label>
+                    <input type="text" id="regSelfName" placeholder="你的名字">
+                    <div class="login-hint">以「自己」身份进入，直接成为墟界总局员工，可进终端</div>
                 </div>
-                <div class="form-group" id="regStaffWrap" style="display:none;">
-                    <label class="input-label">扮演员工</label>
-                    <select id="regStaffSelect">
-                        <option value="L-09-01-S">苏晚眠</option>
-                        <option value="L-09-02-C">沈绛离</option>
-                        <option value="L-09-03-X">谢逢虚</option>
-                        <option value="L-09-04-W">温泣语</option>
-                        <option value="L-09-05-L">陆烬弦</option>
-                    </select>
-                    <div class="login-hint">以员工身份发言会显示角色名；管理员不开放注册</div>
+                <div class="form-group" id="regAwakenedWrap" style="display:none;">
+                    <div class="awaken-form-title">☾ 觉醒者登记表</div>
+                    <div class="awaken-section">
+                        <div class="awaken-sec-title">1. 基础信息</div>
+                        <label class="input-label">角色名（必填）</label>
+                        <input type="text" id="regAwakenName" placeholder="你的角色名字">
+                        <div class="awaken-row">
+                            <div><label class="input-label">性别</label><input type="text" id="regAwakenGender" placeholder="男 / 女 / 其他"></div>
+                            <div><label class="input-label">年龄</label><input type="text" id="regAwakenAge" placeholder="如 17"></div>
+                        </div>
+                        <div class="awaken-row">
+                            <div><label class="input-label">生日（月/日）</label><input type="text" id="regAwakenBirth" placeholder="如 3/15"></div>
+                            <div><label class="input-label">身高</label><input type="text" id="regAwakenHeight" placeholder="如 168cm"></div>
+                        </div>
+                        <div class="awaken-row">
+                            <div><label class="input-label">体重</label><input type="text" id="regAwakenWeight" placeholder="如 52kg"></div>
+                            <div><label class="input-label">身份</label><input type="text" id="regAwakenIdentity" placeholder="如 临川府私立高中高三学生"></div>
+                        </div>
+                    </div>
+                    <div class="awaken-section">
+                        <div class="awaken-sec-title">2. 锚点（兽化异变）</div>
+                        <div class="awaken-row">
+                            <div><label class="input-label">锚点类型</label><input type="text" id="regAwakenAnchorType" placeholder="兔 / 狐 / 猫 / 鸟 / 犬 / 其他"></div>
+                            <div><label class="input-label">实力评级</label><input type="text" id="regAwakenLevel" placeholder="如 辛阶"></div>
+                        </div>
+                        <label class="input-label">核心能力（3-5 个，用、分隔）</label>
+                        <input type="text" id="regAwakenAbilities" placeholder="跑得特别快、能闻到异常气息">
+                    </div>
+                    <div class="awaken-section">
+                        <div class="awaken-sec-title">3. 外貌与穿搭</div>
+                        <label class="input-label">外貌特征</label>
+                        <textarea id="regAwakenAppearance" rows="2" placeholder="头发颜色、眼睛颜色、特殊标记等"></textarea>
+                        <label class="input-label">穿搭风格</label>
+                        <textarea id="regAwakenStyle" rows="2" placeholder="平时喜欢穿什么"></textarea>
+                    </div>
+                    <div class="awaken-section">
+                        <div class="awaken-sec-title">4. 背景故事（150-300 字）</div>
+                        <label class="input-label">家庭 / 成长环境</label>
+                        <textarea id="regAwakenFamily" rows="2" placeholder="父母做什么的？在哪长大？"></textarea>
+                        <label class="input-label">关键经历</label>
+                        <textarea id="regAwakenExperience" rows="3" placeholder="有没有遇到过奇怪的事？为什么成为觉醒者？"></textarea>
+                    </div>
+                    <div class="awaken-section">
+                        <div class="awaken-sec-title">5. 性格</div>
+                        <div class="awaken-row">
+                            <div><label class="input-label">性格特点（用、分隔）</label><input type="text" id="regAwakenTraits" placeholder="安静、话多、嘴硬心软"></div>
+                        </div>
+                        <label class="input-label">人际关系</label>
+                        <textarea id="regAwakenRelations" rows="2" placeholder="和谁关系好？和谁有矛盾？"></textarea>
+                    </div>
+                    <div class="awaken-section">
+                        <div class="awaken-sec-title">6. 专属物品</div>
+                        <label class="input-label">收容物 / 武器（名字和简单描述）</label>
+                        <textarea id="regAwakenItem" rows="2" placeholder="如有的话"></textarea>
+                    </div>
+                    <label class="input-label">头像（可选，emoji）</label>
+                    <input type="text" id="regAwakenAvatar" placeholder="🙂">
+                    <div class="login-hint">扮演觉醒者角色，可正常发帖、进终端</div>
                 </div>
                 <button id="registerBtn">◈ 注 册 ◈</button>
                 <div id="registerError" class="error-msg"></div>
@@ -414,14 +508,14 @@
                             <span class="sig-node-name">宁州府</span>
                             <span class="sig-node-tag">学术 · 观测</span>
                         </div>
-                        <div class="sig-node" data-site="玄水府" style="left:40.8%;top:57.8%;">
+                        <div class="sig-node" data-site="潭州府" style="left:40.8%;top:57.8%;">
                             <span class="sig-node-dot"></span>
-                            <span class="sig-node-name">玄水府</span>
+                            <span class="sig-node-name">潭州府</span>
                             <span class="sig-node-tag">古墓 · 庚阶</span>
                         </div>
-                        <div class="sig-node" data-site="赤岭府" style="left:29.2%;top:76.5%;">
+                        <div class="sig-node" data-site="丹霞府" style="left:29.2%;top:76.5%;">
                             <span class="sig-node-dot"></span>
-                            <span class="sig-node-name">赤岭府</span>
+                            <span class="sig-node-name">丹霞府</span>
                             <span class="sig-node-tag">山野 · 辛阶</span>
                         </div>
                         <div class="sig-node" data-site="南荒岭" style="left:19.8%;top:86.4%;">
@@ -475,7 +569,7 @@
                                 <p>· 玄理科研院：编号 LC-Q-039「天极」已完成例行灵质校准，十三骨效果表已下发各小队</p>
                                 <p>· 玄理科研院：新一期《实验记录》已归档——「逢雨」「灵枢」「天极」「落羽」「狂骨」例行实验完成，含事故备案 2 起、意外 3 起</p>
                                 <p>· 监测预警司：《异化体图鉴》更新至 9 类，新增「井底之物」「引路伪物」观测条目，请外勤阅毕签收</p>
-                                <p>· 收容物保管司：通报——LC-W-045「纸嫁衣」已自殡葬店事件现场回收，庚阶管控，禁止外借</p>
+                                <p>· 收容物保管司：通报——LC-L-045「纸嫁衣」已自殡葬店事件现场回收，庚阶管控，禁止外借</p>
                                 <p>· 外勤行动司：行动代号「归影」已完结——无主之影回收完成，旧纸厂片区风险等级下调</p>
                                 <p>· 认知防护司：请各司局于本周五前提交一季度认知污染处置报告</p>
                                 <p>· 认知防护司：提醒——凡夜间巡逻，随身携带旧伞、银针、桃木片，三样缺一不可</p>
@@ -518,21 +612,21 @@
                                 <circle cx="330" cy="290" r="3" fill="#cf8a8a"/>
                                 <text x="342" y="286" fill="#c9c6bf" font-size="10">宁州府</text>
                                 <circle cx="620" cy="120" r="3" fill="#6b7280"/>
-                                <text x="632" y="116" fill="#a8adb8" font-size="10">青阳府</text>
+                                <text x="632" y="116" fill="#a8adb8" font-size="10">朔方府</text>
                                 <circle cx="250" cy="385" r="3" fill="#6b7280"/>
-                                <text x="262" y="381" fill="#a8adb8" font-size="10">赤岭府</text>
+                                <text x="262" y="381" fill="#a8adb8" font-size="10">丹霞府</text>
                                 <circle cx="610" cy="280" r="3" fill="#6b7280"/>
-                                <text x="622" y="276" fill="#a8adb8" font-size="10">白鹭府</text>
+                                <text x="622" y="276" fill="#a8adb8" font-size="10">汀澜府</text>
                                 <circle cx="460" cy="210" r="3" fill="#6b7280"/>
-                                <text x="472" y="206" fill="#a8adb8" font-size="10">玄水府</text>
+                                <text x="472" y="206" fill="#a8adb8" font-size="10">潭州府</text>
                                 <circle cx="390" cy="350" r="3" fill="#6b7280"/>
-                                <text x="402" y="346" fill="#a8adb8" font-size="10">苍梧府</text>
+                                <text x="402" y="346" fill="#a8adb8" font-size="10">桂阳府</text>
                                 <circle cx="150" cy="105" r="3" fill="#6b7280"/>
                                 <text x="162" y="101" fill="#a8adb8" font-size="10">沙洲府</text>
                                 <circle cx="215" cy="165" r="3" fill="#6b7280"/>
-                                <text x="227" y="161" fill="#a8adb8" font-size="10">云中府</text>
+                                <text x="227" y="161" fill="#a8adb8" font-size="10">高昌府</text>
                                 <circle cx="510" cy="452" r="3" fill="#6b7280"/>
-                                <text x="522" y="448" fill="#a8adb8" font-size="10">琼海府</text>
+                                <text x="522" y="448" fill="#a8adb8" font-size="10">珠崖府</text>
                                 <text x="195" y="430" fill="#8a4b4b" font-size="10">南荒岭</text>
                                 <text x="178" y="445" fill="#5a5f6b" font-size="9">· 无人区警戒 ·</text>
                             </svg>
@@ -554,7 +648,7 @@
                     </div>
                     <div class="terminal-fortune"><span class="fortune-label">今日一签</span><span id="terminalFortuneText"></span></div>
                     <div class="home-index-grid" id="homeIndexGrid">
-                        <div class="index-card active" data-panel="bureau"><span class="index-ico">☯</span><span>总局架构</span><small>六大司局</small></div>
+                        <div class="index-card active" data-panel="bureau"><span class="index-ico">☯</span><span>总局架构</span><small>八大司局</small></div>
                         <div class="index-card" data-panel="commBoard"><span class="index-ico">✉</span><span>总局通讯</span><small>内部通告</small></div>
                         <div class="index-card" data-panel="internalForum"><span class="index-ico">▣</span><span>司内议室</span><small>内部讨论</small></div>
                         <div class="index-card" data-panel="missions"><span class="index-ico">☒</span><span>悬赏榜</span><small>外勤委托</small></div>
@@ -569,8 +663,7 @@
                         <button class="cat-tab" data-category="华墟地理">华墟地理</button>
                         <button class="cat-tab" data-category="威胁评估档案">威胁评估档案</button>
                         <button class="cat-tab" data-category="人物档案">人物档案</button>
-                        <button class="cat-tab" data-category="收容物分支">收容物分支</button>
-                        <button class="cat-tab" data-category="事件分支">事件分支</button>
+                        <button class="cat-tab" data-category="事件记录">事件记录</button>
                         <button class="cat-tab" data-category="行动记录">⚔ 行动记录</button>
                     </div>
                     <div class="archive-search"><span class="prompt">[query]</span><input type="text" id="archiveSearchInput" placeholder="搜索..."></div>
@@ -585,8 +678,48 @@
                 </div>
                 <div class="panel" id="lingshiPanel">
                     <div class="lingshi-container">
-                        <div class="lingshi-sidebar"><h3>频道</h3><button class="channel-btn active" data-channel="main"># 总局</button><button class="channel-btn" data-channel="club"># 民俗社</button><button class="channel-btn" data-channel="operation"># 外勤</button></div>
-                        <div class="lingshi-main"><div class="lingshi-header"># 总局</div><div class="lingshi-messages" id="lingshiMessages"></div><div class="lingshi-input-area"><input type="text" id="lingshiInput" placeholder="消息..."><button id="lingshiSendBtn">发送</button></div></div>
+                        <div class="lingshi-sidebar">
+                            <div class="lingshi-tabs">
+                                <button class="lingshi-tab active" data-ltab="chats" type="button">💬 消息</button>
+                                <button class="lingshi-tab" data-ltab="friends" type="button">👥 好友</button>
+                                <button class="lingshi-tab" data-ltab="requests" type="button">✉️ 申请<span class="social-badge" id="socialReqBadge" style="display:none;">0</span></button>
+                            </div>
+                            <div class="lingshi-section" id="lsec-chats">
+                                <div class="lingshi-sec-title">频道 · 会话</div>
+                                <div id="lingshiChannels"></div>
+                            </div>
+                            <div class="lingshi-section" id="lsec-friends" style="display:none;">
+                                <div class="lingshi-sec-title">好友列表</div>
+                                <div class="social-friends" id="socialFriendsList"><div class="social-empty">加载中...</div></div>
+                                <div class="social-actions"><input type="text" id="socialAddInput" placeholder="输入用户名加好友"><button id="socialAddBtn">+ 申请</button></div>
+                                <div class="lingshi-sec-title collapsible" id="socialGroupHead"><span class="sg-arrow">▾</span> 好友群聊</div>
+                                <div class="social-group" id="socialGroupList"><div class="social-empty">暂无群聊<br>添加好友后点「创建群聊」</div></div>
+                                <button id="socialCreateGroupBtn">＋ 创建好友群聊</button>
+                                <div class="social-create-group" id="socialCreateGroupForm" style="display:none;">
+                                    <input type="text" id="socialNewGroupName" placeholder="群聊名称">
+                                    <div class="social-group-friends" id="socialGroupFriends"></div>
+                                    <button id="socialConfirmGroupBtn">创建群聊</button>
+                                </div>
+                            </div>
+                            <div class="lingshi-section" id="lsec-requests" style="display:none;">
+                                <div class="lingshi-sec-title">好友申请</div>
+                                <div class="social-req" id="socialReqList"><div class="social-empty">加载中...</div></div>
+                            </div>
+                        </div>
+                        <div class="lingshi-main"><div class="lingshi-header" id="lingshiHeader"><span id="lingshiHeaderText"># 总局</span><button id="lingshiGroupDetailBtn" class="lingshi-gd-btn" style="display:none;" title="群聊详情">⋯</button></div><div class="lingshi-messages" id="lingshiMessages"></div><div class="lingshi-input-area"><input type="text" id="lingshiInput" placeholder="消息..."><button id="lingshiSendBtn">发送</button></div></div>
+                    </div>
+                </div>
+                <!-- 群聊详情弹层 -->
+                <div class="gd-overlay" id="groupDetailOverlay" style="display:none;">
+                    <div class="gd-modal">
+                        <div class="gd-head"><span class="gd-title" id="gdGroupName">群聊</span><button class="gd-close" id="gdCloseBtn">✕</button></div>
+                        <div class="gd-row"><span class="gd-label">群主</span><span id="gdOwner">-</span></div>
+                        <div class="gd-row"><span class="gd-label">成员（<span id="gdMemberCount">0</span>）</span></div>
+                        <div class="gd-members" id="gdMemberList"></div>
+                        <div class="gd-actions">
+                            <button class="gd-btn gd-leave" id="gdLeaveBtn" style="display:none;">退出群聊</button>
+                            <button class="gd-btn gd-del" id="gdDeleteBtn" style="display:none;">删除群聊</button>
+                        </div>
                     </div>
                 </div>
                 <div class="panel" id="internalForumPanel">
@@ -597,7 +730,7 @@
                 <div class="panel" id="missionsPanel"><div class="missions-header"><h2>悬赏榜</h2></div><div class="missions-list" id="missionsList"></div></div>
                 <div class="panel" id="profilePanel">
                     <div class="profile-card">
-                        <img src="images/user-icon.png" onerror="this.src=''; this.style.display='none';" alt="默认头像" style="width:60px; height:60px; border-radius:50%; border:2px solid #cf2a2a; background:#222;">
+                        <img src="images/user-icon.png" id="profileAvatarImg" onerror="this.src=''; this.style.display='none';" alt="默认头像" style="width:60px; height:60px; border-radius:50%; border:2px solid var(--accent-red); background:#222;">
                         <div><h2 id="profileName">操作员</h2><p id="profileId">---</p></div>
                     </div>
                     <div class="profile-summary-grid" id="profileSummaryGrid">
@@ -605,7 +738,14 @@
                         <div class="profile-summary-item"><small>收藏数</small><strong id="statFav">0</strong></div>
                         <div class="profile-summary-item"><small>历史记录</small><strong id="statHistory">0</strong></div>
                     </div>
-                    <div class="profile-section"><h3>🎨 终端皮肤</h3><div class="theme-options" id="themeOptions"></div></div>
+                    <div class="profile-section"><h3>� 我的背包 · 实装</h3>
+                        <div class="bp-cat-label">🎨 终端皮肤</div>
+                        <div class="theme-options" id="themeOptions"></div>
+                        <div class="bp-cat-label">🖼️ 论坛头像框</div>
+                        <div class="bp-grid" id="frameOptions"></div>
+                        <div class="bp-cat-label">🏮 论坛皮肤</div>
+                        <div class="bp-grid" id="forumSkinOptions"></div>
+                    </div>
                     <div class="profile-section"><h3>📌 收藏</h3>
                         <div class="fav-groups" id="favGroups"></div>
                         <div class="fav-new-group"><input id="favNewGroupInput" placeholder="新分组名…" maxlength="10"><button id="favNewGroupBtn" class="admin-btn">建组</button></div>
@@ -614,8 +754,8 @@
                     <div class="profile-section"><h3>🕓 最近</h3><div id="historyList"></div></div>
                 </div>
                 <div class="panel" id="bureauPanel">
-                    <div class="scp-header"><span>🏛 总局架构 · 六大司局</span><span class="scp-hint">墟管局 · 内部组织</span></div>
-                    <div class="bureau-intro">墟界管理局下设六大司局，统筹全国墟域监测、收容、科研与认知防护工作。各司局向总局长汇报，遇重大墟域事件联合响应。</div>
+                    <div class="scp-header"><span>🏛 总局架构 · 八大司局</span><span class="scp-hint">墟管局 · 内部组织</span></div>
+                    <div class="bureau-intro">墟界管理局下设八大司局，统筹全国墟域监测、收容、科研、认知防护与情报工作。各司局向总局长汇报，遇重大墟域事件联合响应。</div>
                     <div class="bureau-dept-grid" id="bureauDeptGrid"></div>
                 </div>
                 <div class="panel" id="experimentPanel">
@@ -694,7 +834,7 @@
                 <div class="modal-box">
                     <h3 id="modalTitle">编辑档案</h3>
                     <label>编号</label><input type="text" id="editId"><label>标题</label><input type="text" id="editTitle">
-                    <label>分类</label><select id="editCategory"><option>墟界管理档案</option><option>威胁评估档案</option><option>人物档案</option><option>事件分支</option><option>收容物分支</option></select>
+                    <label>分类</label><select id="editCategory"><option>墟界管理档案</option><option>威胁评估档案</option><option>人物档案</option><option>事件记录</option></select>
                     <label>标签</label><input type="text" id="editTags"><label>摘要</label><textarea id="editSummary" rows="2"></textarea>
                     <label>详细内容</label><div class="editor-toolbar"><button id="insertImageBtn">🔗 插图</button></div>
                     <div class="dropzone" id="imageDropZone">🖼️ 拖拽图片到此处</div>
@@ -746,7 +886,7 @@
         </div>
     </div>
 
-    <script src="js/data.js"></script>
-    <script src="js/script.js"></script>
+    <script src="js/data.js?v=065"></script>
+    <script src="js/script.js?v=065"></script>
 </body>
 </html>
